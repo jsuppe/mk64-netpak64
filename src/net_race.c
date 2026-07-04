@@ -863,6 +863,39 @@ static void net_lockstep_reset(void) {
     sLsStall = false;
     sLsStallCount = 0;
 }
+
+/* Apply a DROP — the ONE path used by both receivers and the arbiter, so there is
+ * no arbiter-vs-receiver asymmetry by construction. Fills the leaver's ring with
+ * their final inputs using the sender's FIXED index mapping
+ * (in[i] = frame lastFrame-(LS_REDUN-1-i); count is informational only — the old
+ * compacted-prefix decode disagreed with the sender whenever count < LS_REDUN and
+ * wrote zeroed inputs onto real frames), then marks the player dropped. Idempotent:
+ * repeats and echoes are ignored. */
+static void net_lockstep_apply_drop(const LsDropMsg* dm) {
+    s32 pl = dm->player;
+    s32 i;
+    if (pl < 0 || pl >= NET_MAX_SLOTS || sLsDropped[pl]) {
+        return;
+    }
+    for (i = 0; i < LS_REDUN; i++) {
+        u32 back = (u32) (LS_REDUN - 1 - i);
+        u32 fr;
+        LsInput* d;
+        if ((u32) dm->lastFrame < back) {
+            continue; /* would underflow lastFrame: frame doesn't exist (early race) */
+        }
+        fr = (u32) dm->lastFrame - back;
+        d = &sLsInput[pl][fr % LS_RING];
+        d->button = dm->in[i].button;
+        d->stickX = dm->in[i].stickX;
+        d->stickY = dm->in[i].stickY;
+        d->have = true;
+        d->frame = fr;
+    }
+    sLsDropped[pl] = true;
+    sLsDropLast[pl] = dm->lastFrame;
+    netpak_debug_poke(0x58000000u | ((u32) pl << 16) | ((u32) dm->lastFrame & 0xFFFFu));
+}
 #endif /* NET_LOCKSTEP (module) — net_lockstep_tick below is always defined */
 
 /* Full per-frame lockstep step — call AFTER read_controllers during an online
@@ -909,12 +942,15 @@ void net_lockstep_tick(void) {
      * players convert the other way: their kart becomes a CPU bot exactly when
      * the sim passes their last input frame L — same logical frame on every
      * console, and the CPU AI is deterministic, so the sim stays identical. */
-    for (i = 0; i < np; i++) { /* from 0: if the HOST drops, kart 0 becomes a bot too */
-        if (sLsDropped[i] && (sLsFrame < LS_DELAY || sLsFrame - LS_DELAY > sLsDropLast[i])) {
-            gPlayers[i].type = (gPlayers[i].type & ~(u32) PLAYER_HUMAN) | PLAYER_CPU;
-        } else {
+    for (i = 0; i < np; i++) {
+        if (!sLsDropped[i]) {
             gPlayers[i].type = (gPlayers[i].type & ~(u32) PLAYER_CPU) | PLAYER_HUMAN;
         }
+        /* dropped slots: type is set in the READY branch as a pure function of the
+         * logical frame df (CPU iff df > L) — deciding it here, at tick time, raced
+         * against DROP-message arrival: a receiver whose gate unblocked in the same
+         * tick the DROP arrived simulated L+1 with the kart still HUMAN while the
+         * arbiter simulated it as CPU (the exact L+1 arbiter-only divergence). */
     }
 
 #if NET_ITEM_TEST
@@ -929,20 +965,6 @@ void net_lockstep_tick(void) {
 #endif
 
     f = sLsFrame;
-
-    /* TEMP diag: one-time byte dump of kart 0's Q0 (0x000-0x376) at frame 0 —
-     * tag 0x5A, 3 bytes per poke in order. Diff across consoles offline to get
-     * the exact host-vs-joiner asymmetric field offsets. Remove when solved. */
-    if (0) { /* moved to ready-branch: bytes are identical at the FIRST tick; the
-              * divergence appears during the startup stall window (render writes) */
-        const u8* b0 = (const u8*) &gPlayers[0];
-        u32 off;
-        for (off = 0; off < 0xDD8u; off += 3) {
-            u32 v = ((u32) b0[off] << 16) | ((u32) (off + 1 < 0x376u ? b0[off + 1] : 0) << 8) |
-                    (u32) (off + 2 < 0x376u ? b0[off + 2] : 0);
-            netpak_debug_poke(0x5A000000u | v);
-        }
-    }
 
     /* Path B — isolated sim RNG. Load the sim's private RNG state into the shared
      * LFSR before the sim runs this frame; net_lockstep_rng_save() (called from
@@ -1024,26 +1046,7 @@ void net_lockstep_tick(void) {
             /* arbiter says player X is gone: adopt X's last inputs + last frame L.
              * First DROP accepted wins; repeats for an already-dropped player are
              * ignored so the arbiter can rebroadcast safely. */
-            LsDropMsg* dm = (LsDropMsg*) pkt.data;
-            s32 pl = dm->player;
-            if (pl >= 0 && pl < NET_MAX_SLOTS && !sLsDropped[pl]) {
-                s32 c = dm->count;
-                if (c > LS_REDUN) {
-                    c = LS_REDUN;
-                }
-                for (i = 0; i < c; i++) {
-                    u32 fr = (u32) dm->lastFrame - (u32) (c - 1 - i);
-                    LsInput* d = &sLsInput[pl][fr % LS_RING];
-                    d->button = dm->in[i].button;
-                    d->stickX = dm->in[i].stickX;
-                    d->stickY = dm->in[i].stickY;
-                    d->have = true;
-                    d->frame = fr;
-                }
-                sLsDropped[pl] = true;
-                sLsDropLast[pl] = dm->lastFrame;
-                netpak_debug_poke(0x58000000u | ((u32) pl << 16) | ((u32) dm->lastFrame & 0xFFFFu)); /* drop applied */
-            }
+            net_lockstep_apply_drop((const LsDropMsg*) pkt.data);
         }
     }
 
@@ -1191,6 +1194,12 @@ void net_lockstep_tick(void) {
                 s32 npeers = netpak_peers(peers, 8);
                 bool gone = (sLsStallTicks >= LS_DROP_HARD);
                 bool amArbiter = true;
+                if (npeers < 0 && sLsStallTicks < LS_DROP_HARD) {
+                    amArbiter = false; /* peer table unavailable: don't self-elect
+                                        * (multiple blind arbiters would each pick
+                                        * their own L); hard timeout overrides for
+                                        * liveness */
+                }
                 if (npeers >= 0) {
                     bool present = false;
                     for (i = 0; i < npeers; i++) {
@@ -1241,16 +1250,27 @@ void net_lockstep_tick(void) {
                             dm.in[i].stickY = 0;
                         }
                     }
-                    netpak_send(NETPAK_BROADCAST, 0, &dm, sizeof(dm));
-                    /* apply locally through the same path as receivers: mark now */
-                    sLsDropped[missing] = true;
-                    sLsDropLast[missing] = L;
-                    netpak_debug_poke(0x58000000u | ((u32) missing << 16) | (L & 0xFFFFu));
+                            netpak_send(NETPAK_BROADCAST, 0, &dm, sizeof(dm));
+                    net_lockstep_apply_drop(&dm); /* genuinely the same path as receivers */
                 }
             }
         } else {
             sLsStallTicks = 0;
             sLsStall = false;
+
+            /* Dropped karts: type is a pure function of the logical frame — CPU
+             * from the first frame past their last input L, HUMAN through L. Same
+             * value on every console at the same df, regardless of when the DROP
+             * message arrived (the one-tick-skew fix). */
+            for (i = 0; i < np; i++) {
+                if (sLsDropped[i]) {
+                    if (df > sLsDropLast[i]) {
+                        gPlayers[i].type = (gPlayers[i].type & ~(u32) PLAYER_HUMAN) | PLAYER_CPU;
+                    } else {
+                        gPlayers[i].type = (gPlayers[i].type & ~(u32) PLAYER_CPU) | PLAYER_HUMAN;
+                    }
+                }
+            }
 
             /* Particle-pool neutralization: the four per-kart particle pools
              * (Player+0x258..0xD98, drift dust/sparks) are updated by the RENDER
@@ -1324,61 +1344,6 @@ void net_lockstep_tick(void) {
                 }
                 netpak_debug_poke(0x76000000u | (df & 0xFFFFFFu));
                 netpak_debug_poke(0x77000000u | (h & 0xFFFFFFu));
-            }
-
-            /* TEMP diag: non-Player region hashes at ready (0x5B cam-array region
-             * 0x80186040..0x80186520 relinked-agnostic via symbol; 0x5C object pool;
-             * 0x5D misc) — find what diverges FIRST among globals. */
-            {
-                extern u16 D_801645D0[]; /* first symbol of the camera-array region */
-                const u8* r = (const u8*) D_801645D0;
-                u32 h = 2166136261u, bi;
-                for (bi = 0; bi < 0x4E0u; bi++) { h ^= r[bi]; h *= 16777619u; }
-                netpak_debug_poke(0x5B000000u | (h & 0xFFFFFFu));
-                {
-                    u32 sl, per = (OBJECT_LIST_SIZE + 15) / 16;
-                    for (sl = 0; sl < 16; sl++) {
-                        u32 o, end = (sl + 1) * per;
-                        if (end > OBJECT_LIST_SIZE) end = OBJECT_LIST_SIZE;
-                        h = 2166136261u;
-                        r = (const u8*) &gObjectList[sl * per];
-                        for (bi = 0; bi < (end - sl * per) * sizeof(Object); bi++) { h ^= r[bi]; h *= 16777619u; }
-                        (void) o;
-                        netpak_debug_poke(0x5C000000u | (sl << 20) | (h & 0xFFFFFu));
-                    }
-                }
-            }
-
-            /* TEMP diag: kart-0 Q0 byte dump AT THE READY MOMENT for df==0 (after
-             * the startup stall window's renders) — tag 0x5A. */
-            if (df == 305) {
-                const u8* b0 = (const u8*) &gPlayers[0];
-                u32 off;
-                for (off = 0; off < 0xDD8u; off += 3) {
-                    u32 v = ((u32) b0[off] << 16) | ((u32) (off + 1 < 0xDD8u ? b0[off + 1] : 0) << 8) |
-                            (u32) (off + 2 < 0xDD8u ? b0[off + 2] : 0);
-                    netpak_debug_poke(0x5A000000u | v);
-                }
-            }
-
-            /* TEMP diag v2: FULL-STRUCT per-kart hashes in 4 quarters (0x6F frame;
-             * tag 0x60+kart, value = quarter<<22 | hash22) — localizes a divergence
-             * to kart + byte region. Remove when solved. */
-            {
-                s32 pi;
-                u32 q, bi;
-                netpak_debug_poke(0x6F000000u | (df & 0xFFFFFFu));
-                for (pi = 0; pi < NUM_PLAYERS; pi++) {
-                    const u8* base = (const u8*) &gPlayers[pi];
-                    for (q = 0; q < 4; q++) {
-                        u32 h = 2166136261u;
-                        for (bi = q * 0x376u; bi < (q + 1) * 0x376u && bi < 0xDD8u; bi++) {
-                            h ^= base[bi];
-                            h *= 16777619u;
-                        }
-                        netpak_debug_poke((0x60000000u + ((u32) pi << 24)) | (q << 22) | (h & 0x3FFFFFu));
-                    }
-                }
             }
 
             sLsFrame++;
