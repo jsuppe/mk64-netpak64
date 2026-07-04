@@ -58,7 +58,7 @@ extern void osSyncPrintf(const char* fmt, ...); /* declared in PR/os.h (not via 
  * and pick ONLINE, so Increment 1 can be verified without a controller. Set to
  * 0 to disable. Pokes gMenuSelection (0xE0..) + a 0xFF..F success marker to
  * NP64_TRACE_IO. */
-#define NET_MENU_TEST 1
+#define NET_MENU_TEST 0
 
 /* Determinism probe: run an identical OFFLINE race on two instances with
  * identical scripted inputs and NO networking, hashing all 8 karts' sim state
@@ -143,7 +143,7 @@ static void net_race_menu_test(void) {
  * start-sequence handler instead of the driving path — the kart won't throttle.
  * Diagnosed by poking gPlayers[0].type (0xE200) to a device register visible
  * in NP64_TRACE_IO. Fix = drive the intro state machine properly (see task). */
-#define NET_DEMO_AUTODRIVE 1
+#define NET_DEMO_AUTODRIVE 0
 #define NET_AUTODRIVE_AFTER_FRAMES 45 /* just after start_race() forces GO */
 
 /* --- Wire format (ch0 payload; opaque to the relay) ----------------------- */
@@ -717,7 +717,7 @@ void net_race_debug_tick(void) {
  * increment builds + validates the transport (both consoles receive each
  * other's inputs, aligned by frame); the sim rewire — drive the native 2-4p VS
  * karts from this buffer, single-viewport render, input-delay gate — follows. */
-#define NET_LOCKSTEP 1
+#define NET_LOCKSTEP 0
 
 /* Test-only: inject artificial inbound packet loss to exercise the stall gate on a
  * loss-free LAN. Drops a short burst (< LS_REDUN, so the input still arrives in a
@@ -1181,6 +1181,7 @@ void net_lockstep_tick(void) {
                     if (n2 > 0) {
                         rp2.count = (u8) n2;
                         netpak_send(NETPAK_BROADCAST, 0, &rp2, sizeof(rp2));
+                        netpak_debug_poke(0x57000000u | ((u32) mj << 20) | (H & 0xFFFFFu)); /* relay TX */
                     }
                 }
             }

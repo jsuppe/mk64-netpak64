@@ -18,7 +18,7 @@
 
 /* Test/repro: allow a JOINed peer to START (fixed-room two-instance headless
  * pairing). 0 for the real host-authoritative product build. */
-#define NET_MENU_JOINED_CAN_START 1
+#define NET_MENU_JOINED_CAN_START 0
 
 /* Race-config globals set when the host starts (declared in main.h / menus.h /
  * code_800029B0.h; externed here to avoid heavy includes). */
