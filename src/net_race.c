@@ -765,6 +765,39 @@ static bool    sLsRngActive; /* true while an online lockstep race is running */
 static bool    sLsStall;     /* stall gate: true when a needed input is missing this frame */
 static u32     sLsStallCount; /* diagnostic: total stalled render-frames this race */
 
+/* ---- Player-drop handling -------------------------------------------------
+ * A leaver would otherwise stall everyone forever (the gate needs ALL inputs).
+ * Per-console timeouts would desync (different drop frames), so the drop is an
+ * AGREED event: the lowest-id surviving node (the arbiter) broadcasts a DROP
+ * message carrying the leaver's last known inputs and their last frame L.
+ * Everyone fills the leaver's ring through L, skips them in the gate for frames
+ * > L, and converts their kart to CPU when simulating frame > L — deterministic
+ * on every console (MK64's CPU AI is proven deterministic across consoles). The
+ * first DROP accepted for a player wins; repeats are ignored (the arbiter
+ * rebroadcasts every tick while stalled, covering ch0 loss). Known v1 edge: if
+ * the arbiter itself dies immediately after sending to only SOME peers, the
+ * next arbiter may compute a different L -> split. Acceptable for now. */
+#define LSDROP_TAG    0x44 /* 'D' */
+#define LS_DROP_TICKS 240  /* stalled render-ticks on one frame before peer-table check */
+#define LS_DROP_HARD  900  /* stalled ticks -> drop even if the relay still lists them */
+typedef struct {
+    u8  tag;       /* LSDROP_TAG */
+    u8  player;    /* who is being dropped */
+    u8  count;     /* inputs included (up to LS_REDUN, ending at lastFrame) */
+    u8  pad;
+    u16 lastFrame; /* leaver's last available input frame L */
+    u16 pad2;
+    struct {
+        u16 button;
+        s8  stickX;
+        s8  stickY;
+    } in[LS_REDUN];
+} LsDropMsg;
+static bool sLsDropped[NET_MAX_SLOTS];
+static u32  sLsDropLast[NET_MAX_SLOTS]; /* L — last frame the leaver's input applies */
+static u32  sLsStallTicks;              /* consecutive stalled ticks on the same frame */
+static u32  sLsStallFrame;              /* the df we've been stalled on */
+
 /* Local chase-cam: run MK64's REAL camera-follow for the local kart during render,
  * isolated from the sim by rendering against a COPY of the camera-path block +
  * camera1 + D_80152300 and restoring the sim's copies after. A persistent local
@@ -802,6 +835,10 @@ typedef struct {
 static void net_lockstep_reset(void) {
     bzero(sLsInput, sizeof(sLsInput));
     bzero(sLsPrevBtn, sizeof(sLsPrevBtn));
+    bzero(sLsDropped, sizeof(sLsDropped));
+    bzero(sLsDropLast, sizeof(sLsDropLast));
+    sLsStallTicks = 0;
+    sLsStallFrame = 0;
     sLsFrame = 0;
     sLsMyPlayer = net_menu_node_id();
     sLsSimSeed = 0x1234; /* shared, identical on every console -> synced sim RNG */
@@ -868,9 +905,16 @@ void net_lockstep_tick(void) {
 
     /* Make the non-local player slots human-controlled (they read a controller
      * instead of running AI). Identical on every console -> identical sim. Keep
-     * the staging/countdown bits so the race intro still plays out. */
-    for (i = 1; i < np; i++) {
-        gPlayers[i].type = (gPlayers[i].type & ~(u32) PLAYER_CPU) | PLAYER_HUMAN;
+     * the staging/countdown bits so the race intro still plays out. DROPPED
+     * players convert the other way: their kart becomes a CPU bot exactly when
+     * the sim passes their last input frame L — same logical frame on every
+     * console, and the CPU AI is deterministic, so the sim stays identical. */
+    for (i = 0; i < np; i++) { /* from 0: if the HOST drops, kart 0 becomes a bot too */
+        if (sLsDropped[i] && (sLsFrame < LS_DELAY || sLsFrame - LS_DELAY > sLsDropLast[i])) {
+            gPlayers[i].type = (gPlayers[i].type & ~(u32) PLAYER_HUMAN) | PLAYER_CPU;
+        } else {
+            gPlayers[i].type = (gPlayers[i].type & ~(u32) PLAYER_CPU) | PLAYER_HUMAN;
+        }
     }
 
 #if NET_ITEM_TEST
@@ -962,6 +1006,30 @@ void net_lockstep_tick(void) {
                     d->frame = fr;
                 }
             }
+        } else if (pkt.ch == 0 && pkt.len >= 8 && pkt.data[0] == LSDROP_TAG) {
+            /* arbiter says player X is gone: adopt X's last inputs + last frame L.
+             * First DROP accepted wins; repeats for an already-dropped player are
+             * ignored so the arbiter can rebroadcast safely. */
+            LsDropMsg* dm = (LsDropMsg*) pkt.data;
+            s32 pl = dm->player;
+            if (pl >= 0 && pl < NET_MAX_SLOTS && !sLsDropped[pl]) {
+                s32 c = dm->count;
+                if (c > LS_REDUN) {
+                    c = LS_REDUN;
+                }
+                for (i = 0; i < c; i++) {
+                    u32 fr = (u32) dm->lastFrame - (u32) (c - 1 - i);
+                    LsInput* d = &sLsInput[pl][fr % LS_RING];
+                    d->button = dm->in[i].button;
+                    d->stickX = dm->in[i].stickX;
+                    d->stickY = dm->in[i].stickY;
+                    d->have = true;
+                    d->frame = fr;
+                }
+                sLsDropped[pl] = true;
+                sLsDropLast[pl] = dm->lastFrame;
+                netpak_debug_poke(0x58000000u | ((u32) pl << 16) | ((u32) dm->lastFrame & 0xFFFFu)); /* drop applied */
+            }
         }
     }
 
@@ -975,12 +1043,17 @@ void net_lockstep_tick(void) {
     df = (f >= LS_DELAY) ? (f - LS_DELAY) : 0;
     {
         bool ready = true;
+        s32 missing = -1;
         for (i = 0; i < np; i++) {
             LsInput* s = &sLsInput[i][df % LS_RING];
+            if (sLsDropped[i] && df > sLsDropLast[i]) {
+                continue; /* dropped player: no input needed past their last frame L */
+            }
             /* the slot must hold the input for EXACTLY df — have alone aliases once
              * the ring wraps (input from df±64k would silently pass) */
             if (!s->have || s->frame != df) {
                 ready = false;
+                missing = i;
                 break;
             }
         }
@@ -989,7 +1062,129 @@ void net_lockstep_tick(void) {
             sLsStall = true;
             sLsStallCount++;
             netpak_debug_poke(0x68000000u | (sLsStallCount & 0xFFFFFFu)); /* stall count */
+
+            /* ---- leaver detection + arbitration (runs only while stalled) ----
+             * Track how long we've been stuck on this same frame. Past the soft
+             * threshold, ask the relay's peer table whether the missing player is
+             * still in the room; past the hard threshold, assume gone regardless.
+             * Only the ARBITER — the lowest node id still present — broadcasts the
+             * DROP (every tick while stalled; receivers dedupe), so every console
+             * applies the SAME last-frame L and inputs. */
+            if (df == sLsStallFrame) {
+                sLsStallTicks++;
+            } else {
+                sLsStallFrame = df;
+                sLsStallTicks = 1;
+            }
+
+            /* PEER INPUT RELAY: while stalled on X, rebroadcast X's last-known
+             * inputs in X's name (ingested via the normal LS_TAG path). Two jobs:
+             * (1) recovers losses beyond X's own redundancy window; (2) before a
+             * DROP, converges every console's X-horizon to the MAXIMUM anyone
+             * holds — otherwise the arbiter can pick an L below what faster
+             * consoles already SIMULATED with real inputs, splitting the sim at
+             * the boundary (observed: arbiter one kart-frame ahead from L+1). */
+            if (missing >= 0 && !sLsDropped[missing] && sLsStallTicks >= 30 && (sLsStallTicks % 8) == 0) {
+                LsPacket rp2;
+                s32 n2 = 0;
+                u32 H = df; /* find my highest consecutive frame of X (H-1 = horizon) */
+                u32 base2;
+                while (H > 0) {
+                    LsInput* s = &sLsInput[missing][(H - 1) % LS_RING];
+                    if (s->have && s->frame == H - 1) {
+                        break;
+                    }
+                    H--;
+                }
+                if (H > 0) {
+                    base2 = (H >= LS_REDUN) ? (H - LS_REDUN) : 0;
+                    rp2.tag = LS_TAG;
+                    rp2.player = (u8) missing; /* relayed in X's name */
+                    rp2.pad = 0;
+                    rp2.baseFrame = (u16) base2;
+                    rp2.pad2 = 0;
+                    for (i = 0; (u32) i < H - base2 && i < LS_REDUN; i++) {
+                        LsInput* s = &sLsInput[missing][(base2 + (u32) i) % LS_RING];
+                        if (s->have && s->frame == base2 + (u32) i) {
+                            rp2.in[i].button = s->button;
+                            rp2.in[i].stickX = s->stickX;
+                            rp2.in[i].stickY = s->stickY;
+                            n2 = i + 1;
+                        } else {
+                            break; /* gap: send only the consecutive prefix */
+                        }
+                    }
+                    if (n2 > 0) {
+                        rp2.count = (u8) n2;
+                        netpak_send(NETPAK_BROADCAST, 0, &rp2, sizeof(rp2));
+                    }
+                }
+            }
+
+            if (missing >= 0 && !sLsDropped[missing] && sLsStallTicks >= LS_DROP_TICKS) {
+                netpak_peer_t peers[8];
+                s32 npeers = netpak_peers(peers, 8);
+                bool gone = (sLsStallTicks >= LS_DROP_HARD);
+                bool amArbiter = true;
+                if (npeers >= 0) {
+                    bool present = false;
+                    for (i = 0; i < npeers; i++) {
+                        if ((s32) peers[i].node_id == missing) {
+                            present = true;
+                        }
+                        /* a lower-id node that is still present outranks me */
+                        if ((s32) peers[i].node_id < me && (s32) peers[i].node_id != missing) {
+                            amArbiter = false;
+                        }
+                    }
+                    if (!present) {
+                        gone = true;
+                    }
+                }
+                if (gone && amArbiter) {
+                    /* my highest consecutive frame of the leaver's inputs = L */
+                    LsDropMsg dm;
+                    u32 L = df; /* stalled at df means we have everything below df */
+                    while (L > 0) {
+                        LsInput* s = &sLsInput[missing][(L - 1) % LS_RING];
+                        if (s->have && s->frame == (L - 1)) {
+                            break; /* L-1 present -> L-1 is the last frame */
+                        }
+                        L--;
+                    }
+                    if (L == 0) {
+                        L = 1; /* degenerate: no inputs at all -> drop from the start */
+                    }
+                    L -= 1; /* L = last PRESENT frame */
+                    dm.tag = LSDROP_TAG;
+                    dm.player = (u8) missing;
+                    dm.pad = 0;
+                    dm.pad2 = 0;
+                    dm.lastFrame = (u16) L;
+                    dm.count = 0;
+                    for (i = LS_REDUN - 1; i >= 0; i--) {
+                        u32 fr = L - (u32) (LS_REDUN - 1 - i);
+                        LsInput* s = &sLsInput[missing][fr % LS_RING];
+                        if (fr <= L && s->have && s->frame == fr) {
+                            dm.in[i].button = s->button;
+                            dm.in[i].stickX = s->stickX;
+                            dm.in[i].stickY = s->stickY;
+                            dm.count++;
+                        } else {
+                            dm.in[i].button = 0;
+                            dm.in[i].stickX = 0;
+                            dm.in[i].stickY = 0;
+                        }
+                    }
+                    netpak_send(NETPAK_BROADCAST, 0, &dm, sizeof(dm));
+                    /* apply locally through the same path as receivers: mark now */
+                    sLsDropped[missing] = true;
+                    sLsDropLast[missing] = L;
+                    netpak_debug_poke(0x58000000u | ((u32) missing << 16) | (L & 0xFFFFu));
+                }
+            }
         } else {
+            sLsStallTicks = 0;
             sLsStall = false;
 
             /* drive every player kart from the delayed frame's inputs. Button edges
@@ -997,9 +1192,15 @@ void net_lockstep_tick(void) {
              * of df-1 — that slot may already be overwritten by frame df-1+64. The
              * applied sequence is the same on every console, so edges match. */
             for (i = 0; i < np; i++) {
-                LsInput* s = &sLsInput[i][df % LS_RING];
-                u16 cur = s->button;
+                static const LsInput kNeutral = { 0, 0, 0, false, 0 };
+                const LsInput* s = &sLsInput[i][df % LS_RING];
+                u16 cur;
                 u16 prev = sLsPrevBtn[i];
+                if (sLsDropped[i] && df > sLsDropLast[i]) {
+                    s = &kNeutral; /* dropped: neutral input (kart is CPU anyway) — the
+                                    * ring slot holds stale per-console data */
+                }
+                cur = s->button;
                 gControllers[i].button = cur;
                 gControllers[i].buttonPressed = (u16) (cur & ~prev);
                 gControllers[i].buttonDepressed = (u16) (~cur & prev);
@@ -1013,6 +1214,9 @@ void net_lockstep_tick(void) {
                 u32 hi = 2166136261u;
                 for (i = 0; i < np; i++) {
                     LsInput* s = &sLsInput[i][df % LS_RING];
+                    if (sLsDropped[i] && df > sLsDropLast[i]) {
+                        continue; /* stale per-console ring data — not part of the set */
+                    }
                     hi ^= ((u32) s->button << 16) ^ ((u32) (u8) s->stickX << 8) ^ ((u32) (u8) s->stickY) ^ (u32) i;
                     hi *= 16777619u;
                 }
