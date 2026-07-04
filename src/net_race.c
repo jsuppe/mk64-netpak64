@@ -1334,10 +1334,18 @@ void net_lockstep_tick(void) {
                 u32 h = 2166136261u, bi;
                 for (bi = 0; bi < 0x4E0u; bi++) { h ^= r[bi]; h *= 16777619u; }
                 netpak_debug_poke(0x5B000000u | (h & 0xFFFFFFu));
-                h = 2166136261u;
-                r = (const u8*) gObjectList;
-                for (bi = 0; bi < (u32)(OBJECT_LIST_SIZE * sizeof(Object)); bi++) { h ^= r[bi]; h *= 16777619u; }
-                netpak_debug_poke(0x5C000000u | (h & 0xFFFFFFu));
+                {
+                    u32 sl, per = (OBJECT_LIST_SIZE + 15) / 16;
+                    for (sl = 0; sl < 16; sl++) {
+                        u32 o, end = (sl + 1) * per;
+                        if (end > OBJECT_LIST_SIZE) end = OBJECT_LIST_SIZE;
+                        h = 2166136261u;
+                        r = (const u8*) &gObjectList[sl * per];
+                        for (bi = 0; bi < (end - sl * per) * sizeof(Object); bi++) { h ^= r[bi]; h *= 16777619u; }
+                        (void) o;
+                        netpak_debug_poke(0x5C000000u | (sl << 20) | (h & 0xFFFFFu));
+                    }
+                }
             }
 
             /* TEMP diag: kart-0 Q0 byte dump AT THE READY MOMENT for df==0 (after

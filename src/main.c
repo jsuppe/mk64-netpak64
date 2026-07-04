@@ -587,6 +587,22 @@ void race_logic_loop(void) {
         return;
     }
 
+    /* LOCKSTEP RENDER PACING: on stalled ticks, skip the ENTIRE game render and
+     * submit a minimal display list (same pattern as func_802A38B4). This locks
+     * the render count 1:1 to the sim count on every console, making ALL
+     * render-phase writes (object/actor anim, kart anim, particles, camera)
+     * schedule-deterministic by construction — the whole class of render-rate
+     * state leaks (frames 262/310/630/865/1006...) dies here rather than being
+     * chased field by field. Screen freezes briefly during stalls (sim is frozen
+     * then anyway). No-op offline. */
+    if (net_lockstep_stalled()) {
+        init_rdp();
+        select_framebuffer();
+        gDPFullSync(gDisplayListHead++);
+        gSPEndDisplayList(gDisplayListHead++);
+        return;
+    }
+
     if (sNumVBlanks >= 6) {
         sNumVBlanks = 5;
     }
