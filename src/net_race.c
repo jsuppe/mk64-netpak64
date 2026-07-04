@@ -132,14 +132,16 @@ static void net_race_menu_test(void) {
                     case 4: press = U_JPAD;        break; /* PLAYER -> QLAYER */
                     case 5: press = A_BUTTON;      break; /* save -> SET_IDENTITY */
                     case 6: press = U_JPAD;        break; /* cursor NAME -> JOIN */
-                    case 7: press = A_BUTTON;      break; /* JOIN: preset code -> OM_JOINED */
-                    case 12: press = START_BUTTON; break; /* self-start -> character select */
+                    case 7: press = A_BUTTON;      break; /* JOIN -> code entry (pre-filled) */
+                    case 8: press = A_BUTTON;      break; /* confirm code -> OM_JOINED */
+                    case 13: press = START_BUTTON; break; /* self-start -> character select */
                 }
             } else {
                 switch (onlineStep) {
                     case 1: press = D_JPAD;        break; /* cursor HOST -> JOIN */
-                    case 2: press = A_BUTTON;      break; /* JOIN: preset code -> join directly */
-                    case 7: press = START_BUTTON;  break; /* self-start -> character select */
+                    case 2: press = A_BUTTON;      break; /* JOIN -> code entry (pre-filled) */
+                    case 3: press = A_BUTTON;      break; /* confirm code -> OM_JOINED */
+                    case 8: press = START_BUTTON;  break; /* self-start -> character select */
                 }
             }
             onlineStep++;

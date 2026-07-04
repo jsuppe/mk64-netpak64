@@ -19,6 +19,7 @@
 #include "replays.h"
 #include "render_courses.h"
 #include "main.h"
+#include "net_menu.h"
 #include "courses/all_course_data.h"
 #include "courses/all_course_packed.h"
 #include "menus.h"
@@ -186,7 +187,11 @@ void setup_race(void) {
     } else {
         gCourseDirection = 1.0f;
     }
-    if (gModeSelection == GRAND_PRIX) {
+    /* ONLINE races run as GRAND_PRIX "cup race 1" (index 0 keeps the fresh-grid
+     * and CPU-roster init), so this recompute would force the cup's FIRST track
+     * no matter what the host picked (the "always Luigi Raceway" bug). Online,
+     * gCurrentCourseId already carries the host's locked course — keep it. */
+    if (gModeSelection == GRAND_PRIX && !net_menu_online_active()) {
         gCurrentCourseId = gCupCourseOrder[gCupSelection][gCourseIndexInCup];
     }
     gActiveScreenMode = gScreenModeSelection;

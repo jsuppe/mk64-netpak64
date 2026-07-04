@@ -2378,6 +2378,7 @@ void func_80094A64(struct GfxPool* pool) {
         case START_MENU:
             func_80095574();
             func_80093E40();
+            net_menu_render_version(); // NetPak64: "JSUPPE VERSION N" build stamp
             break;
         case OPTIONS_MENU:
         case DATA_MENU:

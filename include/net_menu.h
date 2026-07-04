@@ -12,6 +12,10 @@
 #include <ultra64.h>
 #include "common_structs.h"
 
+/** Build number shown on the title screen ("JSUPPE VERSION N") so a stale ROM
+ *  is obvious at a glance. BUMP THIS every time a new ROM is handed out. */
+#define NETPAK_ROM_VERSION 4
+
 /** Enter the online screen fresh (called when NETWORK_VS_MENU is set up). */
 void net_menu_reset(void);
 
@@ -20,6 +24,10 @@ void net_menu_update(struct Controller* controller);
 
 /** Per-frame draw during the menu render pass (from func_80094A64). */
 void net_menu_render(void);
+
+/** Draw "JSUPPE VERSION N" on the title screen, under the copyright line
+ * (from func_80094A64's START_MENU case). */
+void net_menu_render_version(void);
 
 /** True while an online race is being set up — course_select_menu_act then
  * auto-drives the real CUP->COURSE->OK->launch flow with the course pre-locked,

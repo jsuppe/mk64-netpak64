@@ -518,20 +518,10 @@ void net_menu_update(struct Controller* controller) {
                             play_sound2(SOUND_MENU_GO_BACK);
                         }
                     }
-                } else if (sHavePreset) { /* JOIN: code known — join straight away */
-                    if (netpak_present() && (netpak_status() & NETPAK_STATUS_LINK_UP)) {
-                        sLastErr = 0;
-                        sNodeId = netpak_session_join(sCode);
-                        if (sNodeId >= 0) {
-                            sState = OM_JOINED;
-                            play_sound2(SOUND_MENU_OK_CLICKED);
-                        } else {
-                            sLastErr = -sNodeId;
-                            play_sound2(SOUND_MENU_GO_BACK);
-                        }
-                    }
-                } else { /* JOIN: no code yet — go to manual entry */
-                    net_menu_reset();
+                } else { /* JOIN: always dial the code in (pre-filled from the
+                          * launch code when one was given) — joining a room is
+                          * an explicit act, never automatic. */
+                    sEntryPos = 0;
                     sState = OM_JOIN_ENTRY;
                     play_sound2(SOUND_MENU_SELECT);
                 }
@@ -719,6 +709,29 @@ void net_menu_update(struct Controller* controller) {
             }
             break;
     }
+}
+
+/* Title-screen build stamp, under the copyright line: makes a stale ROM obvious
+ * at a glance. Rendered from func_80094A64's START_MENU case each frame. */
+void net_menu_render_version(void) {
+    char text[24];
+    s32 n = 0;
+    s32 v = NETPAK_ROM_VERSION;
+    const char* label = "JSUPPE VERSION ";
+    while (label[n] != '\0') {
+        text[n] = label[n];
+        n++;
+    }
+    if (v >= 100) {
+        text[n++] = (char) ('0' + (v / 100) % 10);
+    }
+    if (v >= 10) {
+        text[n++] = (char) ('0' + (v / 10) % 10);
+    }
+    text[n++] = (char) ('0' + v % 10);
+    text[n] = '\0';
+    set_text_color(TEXT_YELLOW);
+    print_text1_center_mode_1(0xA0, 0xDC, text, 0, 0.6f, 0.6f);
 }
 
 /* draw one option, highlighted (cycling color) if selected, else plain yellow */
