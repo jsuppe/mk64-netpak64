@@ -58,7 +58,7 @@ extern void osSyncPrintf(const char* fmt, ...); /* declared in PR/os.h (not via 
  * and pick ONLINE, so Increment 1 can be verified without a controller. Set to
  * 0 to disable. Pokes gMenuSelection (0xE0..) + a 0xFF..F success marker to
  * NP64_TRACE_IO. */
-#define NET_MENU_TEST 0
+#define NET_MENU_TEST 1
 
 /* Determinism probe: run an identical OFFLINE race on two instances with
  * identical scripted inputs and NO networking, hashing all 8 karts' sim state
@@ -143,7 +143,7 @@ static void net_race_menu_test(void) {
  * start-sequence handler instead of the driving path — the kart won't throttle.
  * Diagnosed by poking gPlayers[0].type (0xE200) to a device register visible
  * in NP64_TRACE_IO. Fix = drive the intro state machine properly (see task). */
-#define NET_DEMO_AUTODRIVE 0
+#define NET_DEMO_AUTODRIVE 1
 #define NET_AUTODRIVE_AFTER_FRAMES 45 /* just after start_race() forces GO */
 
 /* --- Wire format (ch0 payload; opaque to the relay) ----------------------- */
@@ -717,7 +717,7 @@ void net_race_debug_tick(void) {
  * increment builds + validates the transport (both consoles receive each
  * other's inputs, aligned by frame); the sim rewire — drive the native 2-4p VS
  * karts from this buffer, single-viewport render, input-delay gate — follows. */
-#define NET_LOCKSTEP 0
+#define NET_LOCKSTEP 1
 
 /* Test-only: inject artificial inbound packet loss to exercise the stall gate on a
  * loss-free LAN. Drops a short burst (< LS_REDUN, so the input still arrives in a
@@ -937,7 +937,7 @@ void net_lockstep_tick(void) {
               * divergence appears during the startup stall window (render writes) */
         const u8* b0 = (const u8*) &gPlayers[0];
         u32 off;
-        for (off = 0; off < 0x376u; off += 3) {
+        for (off = 0; off < 0xDD8u; off += 3) {
             u32 v = ((u32) b0[off] << 16) | ((u32) (off + 1 < 0x376u ? b0[off + 1] : 0) << 8) |
                     (u32) (off + 2 < 0x376u ? b0[off + 2] : 0);
             netpak_debug_poke(0x5A000000u | v);
@@ -1251,6 +1251,17 @@ void net_lockstep_tick(void) {
             sLsStallTicks = 0;
             sLsStall = false;
 
+            /* Particle-pool neutralization: the four per-kart particle pools
+             * (Player+0x258..0xD98, drift dust/sparks) are updated by the RENDER
+             * path at render rate — confirmed diverging across consoles at ~303
+             * (10x stride-0x48 diffs) ahead of the 310 kart split. Too big to
+             * snapshot (23KB would starve the heap), so zero them pre-sim every
+             * ready frame: deterministic on all consoles; render still draws
+             * fresh single-frame particles. */
+            for (i = 0; i < NUM_PLAYERS; i++) {
+                bzero(gPlayers[i].particlePool0, 0xB40);
+            }
+
             /* drive every player kart from the delayed frame's inputs. Button edges
              * derive from the last APPLIED buttons (sLsPrevBtn), not a ring lookup
              * of df-1 — that slot may already be overwritten by frame df-1+64. The
@@ -1314,14 +1325,29 @@ void net_lockstep_tick(void) {
                 netpak_debug_poke(0x77000000u | (h & 0xFFFFFFu));
             }
 
+            /* TEMP diag: non-Player region hashes at ready (0x5B cam-array region
+             * 0x80186040..0x80186520 relinked-agnostic via symbol; 0x5C object pool;
+             * 0x5D misc) — find what diverges FIRST among globals. */
+            {
+                extern u16 D_801645D0[]; /* first symbol of the camera-array region */
+                const u8* r = (const u8*) D_801645D0;
+                u32 h = 2166136261u, bi;
+                for (bi = 0; bi < 0x4E0u; bi++) { h ^= r[bi]; h *= 16777619u; }
+                netpak_debug_poke(0x5B000000u | (h & 0xFFFFFFu));
+                h = 2166136261u;
+                r = (const u8*) gObjectList;
+                for (bi = 0; bi < (u32)(OBJECT_LIST_SIZE * sizeof(Object)); bi++) { h ^= r[bi]; h *= 16777619u; }
+                netpak_debug_poke(0x5C000000u | (h & 0xFFFFFFu));
+            }
+
             /* TEMP diag: kart-0 Q0 byte dump AT THE READY MOMENT for df==0 (after
              * the startup stall window's renders) — tag 0x5A. */
-            if (df == 110) {
+            if (df == 305) {
                 const u8* b0 = (const u8*) &gPlayers[0];
                 u32 off;
-                for (off = 0; off < 0x376u; off += 3) {
-                    u32 v = ((u32) b0[off] << 16) | ((u32) (off + 1 < 0x376u ? b0[off + 1] : 0) << 8) |
-                            (u32) (off + 2 < 0x376u ? b0[off + 2] : 0);
+                for (off = 0; off < 0xDD8u; off += 3) {
+                    u32 v = ((u32) b0[off] << 16) | ((u32) (off + 1 < 0xDD8u ? b0[off + 1] : 0) << 8) |
+                            (u32) (off + 2 < 0xDD8u ? b0[off + 2] : 0);
                     netpak_debug_poke(0x5A000000u | v);
                 }
             }
@@ -1409,11 +1435,46 @@ s32 net_lockstep_local_slot(void) {
  * genuine reaction (spinout/hit shake, wall bounce, drift lean, Lakitu rescue) for
  * the LOCAL kart, not slot 0's. net_lockstep_cam_pop() then restores the sim state,
  * so the shared sim never sees the swap (determinism preserved). No-op offline/host. */
-static struct UnkPlayerInner sDb4Save[NET_MAX_SLOTS]; /* render-write isolation */
-static u16  sU002Save[NET_MAX_SLOTS]; /* unk_002: per-screen render bitfield — the
-                                       * confirmed frame-310 lottery leak (1 byte,
-                                       * host=02 vs joiners=01 at first ready) */
+/* Render-write isolation, FULL-STRUCT: the render path writes a dozen+ scattered
+ * Player fields at RENDER rate (unk_002 bitfield, unk_048/0CC/0D4/050[screenId],
+ * animFrame/GroupSelector, tyreSpeed, unk_206, unk_DA4, unk_DB4, even effects) —
+ * render count differs per console, so any of them leaking into the sim is a
+ * schedule lottery (the 310/865 divergences). Snapshot ALL karts before render,
+ * restore after: the sim only ever sees its own deterministic writes. */
+typedef struct { /* every field the render path writes (audited); ~120B/kart */
+    u16   unk_002;
+    Vec4s unk_048, unk_050, unk_0CC, unk_0D4;
+    s16   slopeAccel, unk_206, unk_DA4;
+    s32   tyreSpeed;
+    u16   animFrameSelector[4], animGroupSelector[4];
+    u32   effects;
+    struct UnkPlayerInner unk_DB4;
+} RenderSave;
+static RenderSave sPlySave[NET_MAX_SLOTS];
+static u8 sCamArrSave[0x4E0]; /* camera zoom/height/c-button arrays (main.c bss,
+                               * D_801645D0..+0x4E0): written by the joiner-side
+                               * chase-cam follow at RENDER rate, read by the sim's
+                               * own camera follow inside the sim loop */
 static bool sDb4Active;
+extern u16 D_801645D0[];
+#define RSAVE_CP(dst, src, pi) do { \
+    (dst).unk_002 = (src)[pi].unk_002;   memcpy(&(dst).unk_048, &(src)[pi].unk_048, sizeof(Vec4s)); \
+    memcpy(&(dst).unk_050, &(src)[pi].unk_050, sizeof(Vec4s)); memcpy(&(dst).unk_0CC, &(src)[pi].unk_0CC, sizeof(Vec4s)); \
+    memcpy(&(dst).unk_0D4, &(src)[pi].unk_0D4, sizeof(Vec4s)); (dst).slopeAccel = (src)[pi].slopeAccel; \
+    (dst).unk_206 = (src)[pi].unk_206;   (dst).unk_DA4 = (src)[pi].unk_DA4; \
+    (dst).tyreSpeed = (src)[pi].tyreSpeed; (dst).effects = (src)[pi].effects; \
+    memcpy((dst).animFrameSelector, (src)[pi].animFrameSelector, 8); \
+    memcpy((dst).animGroupSelector, (src)[pi].animGroupSelector, 8); \
+    (dst).unk_DB4 = (src)[pi].unk_DB4; } while (0)
+#define RSAVE_RS(dst, pi, src) do { \
+    (dst)[pi].unk_002 = (src).unk_002;   memcpy(&(dst)[pi].unk_048, &(src).unk_048, sizeof(Vec4s)); \
+    memcpy(&(dst)[pi].unk_050, &(src).unk_050, sizeof(Vec4s)); memcpy(&(dst)[pi].unk_0CC, &(src).unk_0CC, sizeof(Vec4s)); \
+    memcpy(&(dst)[pi].unk_0D4, &(src).unk_0D4, sizeof(Vec4s)); (dst)[pi].slopeAccel = (src).slopeAccel; \
+    (dst)[pi].unk_206 = (src).unk_206;   (dst)[pi].unk_DA4 = (src).unk_DA4; \
+    (dst)[pi].tyreSpeed = (src).tyreSpeed; (dst)[pi].effects = (src).effects; \
+    memcpy((dst)[pi].animFrameSelector, (src).animFrameSelector, 8); \
+    memcpy((dst)[pi].animGroupSelector, (src).animGroupSelector, 8); \
+    (dst)[pi].unk_DB4 = (src).unk_DB4; } while (0)
 
 void net_lockstep_cam_push(void) {
 #if NET_LOCKSTEP
@@ -1430,9 +1491,9 @@ void net_lockstep_cam_push(void) {
      * Snapshot every kart's region before render; pop restores. */
     if (netpak_present() && net_menu_online_active() && gGamestate == RACING) {
         for (pi = 0; pi < NET_MAX_SLOTS; pi++) {
-            sDb4Save[pi] = gPlayers[pi].unk_DB4;
-            sU002Save[pi] = gPlayers[pi].unk_002;
+            RSAVE_CP(sPlySave[pi], gPlayers, pi);
         }
+        memcpy(sCamArrSave, D_801645D0, sizeof(sCamArrSave));
         sDb4Active = true;
     }
 
@@ -1507,9 +1568,9 @@ void net_lockstep_cam_pop(void) {
 
     if (sDb4Active) {
         for (pi = 0; pi < NET_MAX_SLOTS; pi++) {
-            gPlayers[pi].unk_DB4 = sDb4Save[pi];
-            gPlayers[pi].unk_002 = sU002Save[pi];
+            RSAVE_RS(gPlayers, pi, sPlySave[pi]);
         }
+        memcpy(D_801645D0, sCamArrSave, sizeof(sCamArrSave));
         sDb4Active = false;
     }
 
