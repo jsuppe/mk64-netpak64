@@ -930,6 +930,20 @@ void net_lockstep_tick(void) {
 
     f = sLsFrame;
 
+    /* TEMP diag: one-time byte dump of kart 0's Q0 (0x000-0x376) at frame 0 —
+     * tag 0x5A, 3 bytes per poke in order. Diff across consoles offline to get
+     * the exact host-vs-joiner asymmetric field offsets. Remove when solved. */
+    if (0) { /* moved to ready-branch: bytes are identical at the FIRST tick; the
+              * divergence appears during the startup stall window (render writes) */
+        const u8* b0 = (const u8*) &gPlayers[0];
+        u32 off;
+        for (off = 0; off < 0x376u; off += 3) {
+            u32 v = ((u32) b0[off] << 16) | ((u32) (off + 1 < 0x376u ? b0[off + 1] : 0) << 8) |
+                    (u32) (off + 2 < 0x376u ? b0[off + 2] : 0);
+            netpak_debug_poke(0x5A000000u | v);
+        }
+    }
+
     /* Path B — isolated sim RNG. Load the sim's private RNG state into the shared
      * LFSR before the sim runs this frame; net_lockstep_rng_save() (called from
      * race_logic_loop after the sim, before render) snapshots it back. Render and
@@ -1300,28 +1314,35 @@ void net_lockstep_tick(void) {
                 netpak_debug_poke(0x77000000u | (h & 0xFFFFFFu));
             }
 
-            /* TEMP diag: per-kart hash (0x6F frame, 0x60..0x67 karts) to localize a
-             * divergence to a specific kart. Remove when solved. */
+            /* TEMP diag: kart-0 Q0 byte dump AT THE READY MOMENT for df==0 (after
+             * the startup stall window's renders) — tag 0x5A. */
+            if (df == 110) {
+                const u8* b0 = (const u8*) &gPlayers[0];
+                u32 off;
+                for (off = 0; off < 0x376u; off += 3) {
+                    u32 v = ((u32) b0[off] << 16) | ((u32) (off + 1 < 0x376u ? b0[off + 1] : 0) << 8) |
+                            (u32) (off + 2 < 0x376u ? b0[off + 2] : 0);
+                    netpak_debug_poke(0x5A000000u | v);
+                }
+            }
+
+            /* TEMP diag v2: FULL-STRUCT per-kart hashes in 4 quarters (0x6F frame;
+             * tag 0x60+kart, value = quarter<<22 | hash22) — localizes a divergence
+             * to kart + byte region. Remove when solved. */
             {
-                s32 pi, fi;
+                s32 pi;
+                u32 q, bi;
                 netpak_debug_poke(0x6F000000u | (df & 0xFFFFFFu));
                 for (pi = 0; pi < NUM_PLAYERS; pi++) {
-                    Player* pl = &gPlayers[pi];
-                    u32 kh = 2166136261u;
-                    u32 fld[8];
-                    memcpy(&fld[0], &pl->pos[0], 4);
-                    memcpy(&fld[1], &pl->pos[1], 4);
-                    memcpy(&fld[2], &pl->pos[2], 4);
-                    fld[3] = ((u32) (u16) pl->rotation[0] << 16) | (u16) pl->rotation[1];
-                    fld[4] = ((u32) (u16) pl->rotation[2] << 16) | (u16) pl->lapCount;
-                    memcpy(&fld[5], &pl->speed, 4);
-                    fld[6] = pl->effects;
-                    fld[7] = (u32) pl->type;
-                    for (fi = 0; fi < 8; fi++) {
-                        kh ^= fld[fi];
-                        kh *= 16777619u;
+                    const u8* base = (const u8*) &gPlayers[pi];
+                    for (q = 0; q < 4; q++) {
+                        u32 h = 2166136261u;
+                        for (bi = q * 0x376u; bi < (q + 1) * 0x376u && bi < 0xDD8u; bi++) {
+                            h ^= base[bi];
+                            h *= 16777619u;
+                        }
+                        netpak_debug_poke((0x60000000u + ((u32) pi << 24)) | (q << 22) | (h & 0x3FFFFFu));
                     }
-                    netpak_debug_poke((0x60000000u + ((u32) pi << 24)) | (kh & 0xFFFFFFu));
                 }
             }
 
@@ -1388,10 +1409,32 @@ s32 net_lockstep_local_slot(void) {
  * genuine reaction (spinout/hit shake, wall bounce, drift lean, Lakitu rescue) for
  * the LOCAL kart, not slot 0's. net_lockstep_cam_pop() then restores the sim state,
  * so the shared sim never sees the swap (determinism preserved). No-op offline/host. */
+static struct UnkPlayerInner sDb4Save[NET_MAX_SLOTS]; /* render-write isolation */
+static u16  sU002Save[NET_MAX_SLOTS]; /* unk_002: per-screen render bitfield — the
+                                       * confirmed frame-310 lottery leak (1 byte,
+                                       * host=02 vs joiners=01 at first ready) */
+static bool sDb4Active;
+
 void net_lockstep_cam_push(void) {
 #if NET_LOCKSTEP
     s32 ls = net_lockstep_local_slot();
     u32 blk;
+    s32 pi;
+
+    /* RENDER-WRITE ISOLATION (all consoles, host included): the render mutates
+     * Player.unk_DB4 (camera-bounce/wobble decay: camera.c follow + the kart
+     * wobble in render_player.c) at RENDER rate, which differs per console —
+     * a schedule-dependent leak into sim-owned structs. The fields are zero
+     * except briefly after bumps, so the leak fires as a rare binary lottery
+     * (the frame-310 divergence, same two alternate hashes every occurrence).
+     * Snapshot every kart's region before render; pop restores. */
+    if (netpak_present() && net_menu_online_active() && gGamestate == RACING) {
+        for (pi = 0; pi < NET_MAX_SLOTS; pi++) {
+            sDb4Save[pi] = gPlayers[pi].unk_DB4;
+            sU002Save[pi] = gPlayers[pi].unk_002;
+        }
+        sDb4Active = true;
+    }
 
     sCamActive = 0;
     if (ls == 0) {
@@ -1460,6 +1503,15 @@ void net_lockstep_cam_push(void) {
 void net_lockstep_cam_pop(void) {
 #if NET_LOCKSTEP
     u32 blk;
+    s32 pi;
+
+    if (sDb4Active) {
+        for (pi = 0; pi < NET_MAX_SLOTS; pi++) {
+            gPlayers[pi].unk_DB4 = sDb4Save[pi];
+            gPlayers[pi].unk_002 = sU002Save[pi];
+        }
+        sDb4Active = false;
+    }
 
     if (sCamActive == 0) {
         return;
