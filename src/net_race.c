@@ -1,0 +1,1416 @@
+/**
+ * net_race.c — NetPak64 racing netcode, milestone A + interpolation.
+ *
+ * Own kart = player slot 0 (simulated + rendered locally, untouched). Each
+ * frame we broadcast a compact snapshot of slot 0 on ch0 (unreliable,
+ * newest-wins). Inbound snapshots are mapped by sender node id to puppet slots
+ * 1..3 and applied at the per-player update seam (func_80028E70) so the remote
+ * kart's transform comes straight off the wire.
+ *
+ * Puppets are INTERPOLATED, not snapped: each frame we linearly extrapolate
+ * from the two most recent snapshots over their measured arrival interval. This
+ * is unit-free (works in whatever units pos/yaw are), self-tuning to the real
+ * packet rate, adds no fixed latency, and coasts smoothly through a dropped
+ * packet (the extrapolation parameter simply runs past 1.0, clamped).
+ *
+ * In loopback the device echoes our own broadcast, so a single instance shows
+ * slot 1 shadowing slot 0 — a full end-to-end test of the tx/rx/puppet path.
+ * With a relay + a second instance, slot 1 is the other player.
+ */
+#include <ultra64.h>
+#include <string.h>
+#include "common_structs.h"
+#include "defines.h"
+#include "kart_dma.h" /* load_kart_palette (character sync) */
+#include "netpak.h"
+#include "net_race.h"
+#include "objects.h" /* gObjectList — Path A start-state pinpoint diagnostic */
+#include "camera.h"  /* Camera, camera1, func_8001EE98 — lockstep local chase-cam */
+#include "code_800029B0.h" /* D_800DC5EC (course renderer wrapper) — segment culling */
+#include "path.h"          /* gTrackPaths / gNearestPathPointByPlayerId — waypoint autodrive */
+
+extern u16 atan2s(f32, f32);            /* racing/math_util.h */
+extern u16 gPathCountByPathIndex[];     /* points per path (path.h D_801645C8) */
+extern hud_player playerHUD[];          /* itemOverride — forced-item test */
+
+extern f32 gCourseTimer;
+extern u16 D_80152300[]; /* per-camera mode array written by the camera follow */
+
+/* Boundary symbols of cpu_vehicles_camera_path.c's per-CPU state block (all its
+ * .bss laid out contiguously): unk_..._pad is the first, cpu_ItemStrategy the
+ * last (CpuItemStrategyData[NUM_PLAYERS], 0x10 each => 0x80 bytes). Declared as
+ * byte arrays here purely to take their linked addresses; the real types live in
+ * cpu_vehicles_camera_path.h. Used to zero the block at lockstep race entry so
+ * the CPU sim starts identical on every console (see net_lockstep_reset). */
+extern u8 unk_cpu_vehicles_camera_path_pad[];
+extern u8 cpu_ItemStrategy[];
+#define LS_CPU_STATE_END (cpu_ItemStrategy + 8 * 0x10) /* NUM_PLAYERS * sizeof(CpuItemStrategyData) */
+
+extern Player gPlayers[];
+extern struct Controller gControllers[];
+extern s32 gGamestate;
+extern s32 gGlobalTimer;
+extern s32 gMenuSelection;
+extern s8  gMainMenuSelection;
+extern void osSyncPrintf(const char* fmt, ...); /* declared in PR/os.h (not via ultra64.h) */
+
+/* Temporary headless test: auto-navigate the menus to the mode-select screen
+ * and pick ONLINE, so Increment 1 can be verified without a controller. Set to
+ * 0 to disable. Pokes gMenuSelection (0xE0..) + a 0xFF..F success marker to
+ * NP64_TRACE_IO. */
+#define NET_MENU_TEST 0
+
+/* Determinism probe: run an identical OFFLINE race on two instances with
+ * identical scripted inputs and NO networking, hashing all 8 karts' sim state
+ * each frame. If the two hash streams match frame-for-frame, MK64-on-ares is
+ * deterministic → lockstep (shared inputs) is viable. Navigator targets GRAND
+ * PRIX (not ONLINE) and net_race_frame emits (frame,hash) instead of tx/rx. */
+#define NET_DETERMINISM_TEST 0
+
+static void net_race_menu_test(void) {
+#if NET_MENU_TEST
+    static u32 tick;
+    static s32 downs;
+    u16 press = 0;
+
+    if (!netpak_present() || gGamestate == RACING) {
+        return;
+    }
+    if ((tick++ % 18) != 0) {
+        return; /* one action per ~18 frames so fades settle */
+    }
+    netpak_debug_poke(0xE0000000u | (u32)(gMenuSelection & 0xFF));
+    switch (gMenuSelection) {
+        case 8:  /* LOGO_INTRO_MENU */
+        case 10: /* START_MENU */
+            press = START_BUTTON;
+            break;
+        case 9: { /* CONTROLLER_PAK_MENU: move SELECT_RECORD -> END (R), then A to exit */
+            static s32 pakStep;
+            if (pakStep == 0) { press = R_JPAD; pakStep = 1; }
+            else { press = A_BUTTON; pakStep = 0; }
+            break;
+        }
+        case 11: /* MAIN_MENU */
+#if NET_DETERMINISM_TEST
+            press = A_BUTTON; /* step player -> mode(GP) -> CC class -> OK with defaults */
+#else
+            if (gMainMenuSelection == 3) {        /* PLAYER_SELECT: confirm 1P */
+                press = A_BUTTON;
+            } else if (gMainMenuSelection == 4) { /* MODE_SELECT: down to ONLINE then confirm */
+                if (downs < 2) { press = D_JPAD; downs++; }
+                else { press = A_BUTTON; }
+            }
+#endif
+            break;
+        case 12: /* CHARACTER_SELECT_MENU: confirm character + OK */
+            press = A_BUTTON;
+            break;
+        case 13: /* COURSE_SELECT_MENU */
+#if NET_DETERMINISM_TEST
+            press = A_BUTTON;                     /* GP: cup -> OK -> launch */
+#endif
+            break;
+        case NETWORK_VS_MENU: { /* TEMP repro: JOIN shared room "AAAAAA", then START */
+            static s32 onlineStep;
+            netpak_debug_poke(0xF0000000u | (u32)(onlineStep & 0xFF));
+            switch (onlineStep) {
+                case 1: press = D_JPAD;       break; /* cursor HOST -> JOIN */
+                case 2: press = A_BUTTON;     break; /* JOIN: preset code -> join directly (OM_JOINED) */
+                case 7: press = START_BUTTON; break; /* self-start -> character select */
+            }
+            onlineStep++;
+            break;
+        }
+    }
+    if (press) {
+        gControllers[0].buttonPressed |= press;
+        gControllers[0].button |= press;
+        gControllers[0].stickPressed |= press;
+    }
+#endif
+}
+
+/* Demo aid: with ares' Input/Driver=None the local kart never accelerates, so
+ * a networked race just sits on the start grid. With this enabled, exactly ONE
+ * of two paired instances auto-drives forward after the countdown (chosen by
+ * the peer's node id parity), so the other instance visibly watches the remote
+ * kart drive off under network control. Set to 0 for real controller input.
+ *
+ * DISABLED pending a fix: the menu-bypass launch (netpak_launch_race) doesn't
+ * cleanly complete mk64's race-intro state machine (start_race()/D_800DC510),
+ * so player 0 stays flagged PLAYER_START_SEQUENCE and input routes to the
+ * start-sequence handler instead of the driving path — the kart won't throttle.
+ * Diagnosed by poking gPlayers[0].type (0xE200) to a device register visible
+ * in NP64_TRACE_IO. Fix = drive the intro state machine properly (see task). */
+#define NET_DEMO_AUTODRIVE 0
+#define NET_AUTODRIVE_AFTER_FRAMES 45 /* just after start_race() forces GO */
+
+/* --- Wire format (ch0 payload; opaque to the relay) ----------------------- */
+/* Both peers run the identical ROM, so a raw struct is safe: same field
+ * layout, same big-endian byte order. Kept small — 36 bytes, well under the
+ * 1024 B ch0 MTU, comfortable at 30 Hz for 2-4 players (spec §7 budget). */
+#define NETKART_TAG 0x4B /* 'K' */
+#define NETKART_VER 2
+
+typedef struct {
+    u8  tag;
+    u8  ver;
+    u16 seq;         /* newest-wins, wraparound compare */
+    u16 characterId; /* carried for later; not applied in milestone A */
+    s16 rotY;        /* rotation[1] (yaw) — drives the billboard sprite */
+    f32 posX, posY, posZ;
+    f32 velX, velY, velZ;
+    f32 speed;
+    u32 effects;     /* Player.effects — star sparkle, boost, mini-turbo, spinout,
+                      * squish/shrink; drives the puppet's visual state */
+} NetKartSnapshot; /* 40 bytes */
+
+/* --- ch1 event wire format (reliable-ordered) ----------------------------- */
+/* ch1 is unicast + reliable + in-order per peer (spec §10). Discrete race
+ * events that must not be missed or reordered — lap completions, finish/
+ * placement — go here, sent to every known peer. */
+#define NETEV_TAG    0x45 /* 'E' */
+#define NETEV_LAP    1     /* crossed the line onto a new lap */
+#define NETEV_FINISH 2     /* finished the race */
+#define NETEV_HIT    3     /* "your kart was hit by my item" (unicast to victim) */
+
+typedef struct {
+    u8  tag;  /* NETEV_TAG */
+    u8  type; /* NETEV_* */
+    u8  node; /* sender node id (also available as pkt.src) */
+    u8  pad;
+    s16 lap;  /* lap count at the time of the event (LAP/FINISH) */
+    s16 rank; /* current placement (LAP/FINISH) */
+    u32 bits; /* NETEV_HIT: trigger bitmask to apply to the victim's kart */
+} NetEvent; /* 12 bytes */
+
+/* Item-hit triggers we replicate: green/red/blue shell, banana, fake item box,
+ * star bump, and lightning. All are player-caused (one player's item strikes
+ * another), so forwarding them to the victim is correct. Deliberately excludes
+ * course-hazard triggers (thwomp, etc.) — those are simulated identically on
+ * each console and must not be double-applied. */
+#define NET_HIT_MASK (HIGH_TUMBLE_TRIGGER | LOW_TUMBLE_TRIGGER | \
+                      HIT_BANANA_TRIGGER | VERTICAL_TUMBLE_TRIGGER | \
+                      HIT_BY_STAR_TRIGGER | LIGHTNING_STRIKE_TRIGGER)
+
+/* --- Replication state ---------------------------------------------------- */
+#define NET_MAX_SLOTS 8      /* slot 0 = local; 1..7 = remote puppets (room cap) */
+#define NET_ALPHA_MAX 2.0f   /* clamp extrapolation to 2 intervals on packet loss */
+
+typedef struct {
+    bool valid;
+    u16  seq;
+
+    /* Two most recent snapshots + their arrival times (us), for interpolation. */
+    bool havePrev;
+    f32  prevPos[3];
+    s16  prevYaw;
+    u32  prevTime;
+    f32  curPos[3];
+    s16  curYaw;
+    u32  curTime;
+    f32  speed;
+    u16  characterId;
+    u32  effects; /* remote's Player.effects — replicated to the puppet's visuals */
+
+    /* Render transform computed once per frame, consumed by the puppet apply. */
+    f32  renderPos[3];
+    s16  renderYaw;
+
+    /* Latest race-flow state received over ch1 (for standings/HUD later). */
+    s16  lap;
+    s16  rank;
+    bool finished;
+} RemoteSlot;
+
+static RemoteSlot sRemote[NUM_PLAYERS];
+static s16        sSrcSlot[256]; /* sender node id -> puppet slot, -1 = unknown */
+static u8         sPeerNode[NET_MAX_SLOTS]; /* puppet slot -> peer node id */
+static bool       sPeerUsed[NET_MAX_SLOTS];
+static s32        sNextSlot;     /* next puppet slot to hand out (1..) */
+static u16        sTxSeq;
+static s32        sPrevGamestate;
+static u32        sNetEpoch;
+
+/* Local race-flow state, to detect changes worth broadcasting on ch1. */
+static s16        sLastLap;
+static bool       sSentFinish;
+static u32        sRaceFrames; /* rendered frames since entering the race */
+
+/* Auto-start latch (separate from per-race reset so we never re-trigger). */
+static bool       sAutoStarted;
+static u32        sLinkUpUs;
+
+#define NET_AUTOSTART_BOOT_FRAMES 150       /* let boot/logo finish (~5 s) */
+#define NET_AUTOSTART_LOOPBACK_US 3000000u  /* LINK_UP-with-no-SESSION grace */
+
+/* microseconds of emulated time (matches the driver's clock), truncated to
+ * u32. Only ever used for small frame-interval deltas via modular subtraction,
+ * so the ~71-minute wrap is harmless — and staying 32-bit keeps the alpha math
+ * off the 64-bit-to-float libgcc path. */
+static u32 net_now_us(void) {
+    return (u32)((osGetTime() * 64ull) / 3000ull);
+}
+
+void net_race_reset(void) {
+    s32 i;
+    bzero(sRemote, sizeof(sRemote));
+    bzero(sPeerNode, sizeof(sPeerNode));
+    bzero(sPeerUsed, sizeof(sPeerUsed));
+    for (i = 0; i < 256; i++) {
+        sSrcSlot[i] = -1;
+    }
+    sNextSlot = 1;
+    sTxSeq = 0;
+    sLastLap = -1;
+    sSentFinish = false;
+}
+
+/* Map a sender node id to a stable puppet slot, allocating on first sight. */
+static s32 net_race_src_slot(u8 src) {
+    s16 slot = sSrcSlot[src];
+    if (slot >= 0) {
+        return slot;
+    }
+    if (sNextSlot >= NET_MAX_SLOTS) {
+        return -1; /* room fuller than we can puppet; ignore extras */
+    }
+    slot = (s16)sNextSlot++;
+    sSrcSlot[src] = slot;
+    sPeerNode[slot] = src; /* remember the node id so we can ch1-unicast to it */
+    sPeerUsed[slot] = true;
+    return slot;
+}
+
+/* Reliable broadcast: ch1 is unicast-only (spec §11), so send one copy to each
+ * known peer. Peers are learned from inbound ch0 snapshots. */
+static void net_event_send_all(const NetEvent* ev) {
+    s32 i;
+    for (i = 1; i < NET_MAX_SLOTS; i++) {
+        if (sPeerUsed[i]) {
+            netpak_send(sPeerNode[i], 1, ev, sizeof(*ev));
+        }
+    }
+}
+
+/* Reliable unicast to one peer node. */
+static void net_event_send_one(u8 node, const NetEvent* ev) {
+    netpak_send(node, 1, ev, sizeof(*ev));
+}
+
+/* Handle a ch1 race-flow event from a peer. */
+static void net_event_ingest(u8 src, const u8* data, u16 len) {
+    NetEvent ev;
+    s32 slot;
+    RemoteSlot* r;
+
+    if (len < sizeof(NetEvent)) {
+        return;
+    }
+    memcpy(&ev, data, sizeof(ev));
+    if (ev.tag != NETEV_TAG) {
+        return;
+    }
+
+    /* A hit reported by a peer whose item struck our kart on their screen:
+     * apply the reaction to our own kart (slot 0) and let our normal
+     * apply_triggers pipeline play it out (spin/tumble, sound, camera). Masked
+     * to known item triggers so a corrupt packet can't inject arbitrary bits. */
+    if (ev.type == NETEV_HIT) {
+        gPlayers[0].triggers |= (ev.bits & NET_HIT_MASK);
+        osSyncPrintf("netpak: got HIT from node %d (bits %08x)\n", src, ev.bits);
+        return;
+    }
+
+    slot = net_race_src_slot(src);
+    if (slot < 0) {
+        return;
+    }
+    r = &sRemote[slot];
+    r->lap = ev.lap;
+    r->rank = ev.rank;
+    if (ev.type == NETEV_FINISH) {
+        r->finished = true;
+        osSyncPrintf("netpak: peer node %d FINISHED (place %d)\n", src, ev.rank);
+    } else {
+        osSyncPrintf("netpak: peer node %d reached lap %d (place %d)\n", src, ev.lap, ev.rank);
+    }
+}
+
+static void net_race_tx(void) {
+    NetKartSnapshot s;
+    Player* me = &gPlayers[0];
+
+    s.tag = NETKART_TAG;
+    s.ver = NETKART_VER;
+    s.seq = sTxSeq++;
+    s.characterId = me->characterId;
+    s.rotY = me->rotation[1];
+    s.posX = me->pos[0];
+    s.posY = me->pos[1];
+    s.posZ = me->pos[2];
+    s.velX = me->velocity[0];
+    s.velY = me->velocity[1];
+    s.velZ = me->velocity[2];
+    s.speed = me->speed;
+    s.effects = me->effects;
+
+    netpak_send(NETPAK_BROADCAST, 0, &s, sizeof(s));
+}
+
+static void net_race_rx(void) {
+    static netpak_pkt_t pkt; /* 1 KB — keep off the stack */
+    NetKartSnapshot s;
+    s32 slot;
+    RemoteSlot* r;
+    u32 now;
+
+    while (netpak_recv(&pkt) == 0) {
+        if (pkt.ch == 1) {
+            net_event_ingest(pkt.src, pkt.data, pkt.len); /* reliable race events */
+            continue;
+        }
+        if (pkt.ch != 0) {
+            continue;
+        }
+        if (pkt.len < sizeof(NetKartSnapshot)) {
+            continue;
+        }
+        memcpy(&s, pkt.data, sizeof(s)); /* copy out; pkt.data may be unaligned */
+        if (s.tag != NETKART_TAG || s.ver != NETKART_VER) {
+            continue;
+        }
+        slot = net_race_src_slot(pkt.src);
+        if (slot < 0) {
+            continue;
+        }
+        r = &sRemote[slot];
+        if (r->valid && (s16)(s.seq - r->seq) <= 0) {
+            continue; /* older/duplicate — newest-wins */
+        }
+
+        now = net_now_us();
+        if (!r->valid) {
+            /* First snapshot: seed both endpoints so interpolation is a no-op
+             * until the second arrives. */
+            r->prevPos[0] = r->curPos[0] = s.posX;
+            r->prevPos[1] = r->curPos[1] = s.posY;
+            r->prevPos[2] = r->curPos[2] = s.posZ;
+            r->prevYaw = r->curYaw = s.rotY;
+            r->prevTime = r->curTime = now;
+            r->havePrev = false;
+        } else {
+            /* Slide the window: current becomes previous, new becomes current. */
+            r->prevPos[0] = r->curPos[0];
+            r->prevPos[1] = r->curPos[1];
+            r->prevPos[2] = r->curPos[2];
+            r->prevYaw = r->curYaw;
+            r->prevTime = r->curTime;
+            r->curPos[0] = s.posX;
+            r->curPos[1] = s.posY;
+            r->curPos[2] = s.posZ;
+            r->curYaw = s.rotY;
+            r->curTime = now;
+            r->havePrev = true;
+        }
+        r->speed = s.speed;
+        r->characterId = s.characterId;
+        r->effects = s.effects;
+        r->valid = true;
+        r->seq = s.seq;
+    }
+}
+
+/* Compute each puppet's render transform for this frame by extrapolating from
+ * its two most recent snapshots. alpha = fraction of a snapshot interval that
+ * has elapsed since the latest snapshot; render = cur + (cur - prev) * alpha. */
+static void net_race_interpolate(void) {
+    u32 now = net_now_us();
+    s32 i;
+
+    for (i = 1; i < NUM_PLAYERS; i++) {
+        RemoteSlot* r = &sRemote[i];
+        f32 alpha;
+        u32 interval;
+        s16 dYaw;
+
+        if (!r->valid) {
+            continue;
+        }
+        if (!r->havePrev) {
+            r->renderPos[0] = r->curPos[0];
+            r->renderPos[1] = r->curPos[1];
+            r->renderPos[2] = r->curPos[2];
+            r->renderYaw = r->curYaw;
+            continue;
+        }
+
+        interval = r->curTime - r->prevTime; /* modular u32 subtraction */
+        if (interval == 0) {
+            alpha = 0.0f;
+        } else {
+            alpha = (f32)(s32)(now - r->curTime) / (f32)(s32)interval;
+            if (alpha < 0.0f) {
+                alpha = 0.0f;
+            }
+            if (alpha > NET_ALPHA_MAX) {
+                alpha = NET_ALPHA_MAX;
+            }
+        }
+
+        r->renderPos[0] = r->curPos[0] + (r->curPos[0] - r->prevPos[0]) * alpha;
+        r->renderPos[1] = r->curPos[1] + (r->curPos[1] - r->prevPos[1]) * alpha;
+        r->renderPos[2] = r->curPos[2] + (r->curPos[2] - r->prevPos[2]) * alpha;
+
+        /* Yaw: extrapolate along the short way around the circle (s16 wraps). */
+        dYaw = (s16)(r->curYaw - r->prevYaw);
+        r->renderYaw = (s16)(r->curYaw + (s16)((f32)dYaw * alpha));
+    }
+}
+
+/* Watch the local kart's lap counter and reliably announce each lap completion
+ * and the finish (lapCount reaches 3) to every peer over ch1. lapCount starts
+ * at -1 and increments on each finish-line crossing (race_logic.c:543). */
+static void net_race_events_tx(void) {
+    Player* me = &gPlayers[0];
+    s16 lap = me->lapCount;
+    NetEvent ev;
+
+    if (lap == sLastLap) {
+        return;
+    }
+    sLastLap = lap;
+    if (lap < 1) {
+        return; /* -1/0 = still on the first lap; nothing completed yet */
+    }
+
+    ev.tag = NETEV_TAG;
+    ev.node = 0; /* our own id is unknown here; peers key off pkt.src */
+    ev.pad = 0;
+    ev.lap = lap;
+    ev.rank = me->currentRank;
+    if (lap >= 3 && !sSentFinish) {
+        ev.type = NETEV_FINISH;
+        sSentFinish = true;
+        osSyncPrintf("netpak: local FINISH (place %d)\n", me->currentRank);
+    } else {
+        ev.type = NETEV_LAP;
+        osSyncPrintf("netpak: local lap %d (place %d)\n", lap, me->currentRank);
+    }
+    net_event_send_all(&ev);
+}
+
+/* Character sync: give each puppet its peer's driver. Kart body textures, size
+ * and wheels re-DMA every frame off live characterId (kart_dma.c), so setting
+ * the field is enough for those; only the body PALETTE needs an explicit reload
+ * (both double-buffer indices), and only when the character actually changes. */
+static void net_race_apply_characters(void) {
+    s32 i;
+    for (i = 1; i < NUM_PLAYERS; i++) {
+        RemoteSlot* r = &sRemote[i];
+        if (!r->valid) {
+            continue;
+        }
+        if (r->characterId > BOWSER) {
+            continue; /* guard against a corrupt id indexing character tables */
+        }
+        if (gPlayers[i].characterId != r->characterId) {
+            gPlayers[i].characterId = r->characterId;
+            load_kart_palette(&gPlayers[i], (s8)i, 0, 0);
+            load_kart_palette(&gPlayers[i], (s8)i, 0, 1);
+            osSyncPrintf("netpak: puppet slot %d -> character %d\n", i, r->characterId);
+        }
+    }
+}
+
+/* Item-hit replication (target-authority). When one of OUR item actors strikes
+ * a remote player's puppet in our world, the engine's per-kart collision has
+ * already set that puppet slot's trigger bits. Report the hit to the victim so
+ * their own kart reacts, then consume the bits (the puppet's visible reaction
+ * comes back to us through their position snapshots — no local actor spawning). */
+static void net_race_scan_hits(void) {
+    s32 i;
+    for (i = 1; i < NUM_PLAYERS; i++) {
+        s32 hit;
+        if (!sRemote[i].valid || !sPeerUsed[i]) {
+            continue;
+        }
+        hit = gPlayers[i].triggers & NET_HIT_MASK;
+        if (hit) {
+            NetEvent ev;
+            ev.tag = NETEV_TAG;
+            ev.type = NETEV_HIT;
+            ev.node = 0;
+            ev.pad = 0;
+            ev.lap = 0;
+            ev.rank = 0;
+            ev.bits = (u32)hit;
+            net_event_send_one(sPeerNode[i], &ev);
+            gPlayers[i].triggers &= ~hit; /* consume so it fires exactly once */
+            osSyncPrintf("netpak: my item hit puppet slot %d (bits %08x) -> node %d\n",
+                         i, hit, sPeerNode[i]);
+        }
+    }
+}
+
+/* Demo auto-drive: force the local kart to hold accelerate once the race is
+ * running. Asymmetric — only the instance whose peer has an odd node id drives,
+ * so its partner sits still and watches the remote (networked) kart pull away.
+ * Called from the game loop AFTER read_controllers() so it isn't overwritten. */
+void net_race_autodrive(void) {
+    net_race_menu_test(); /* temp: headless menu navigation to verify ONLINE entry */
+#if NET_DEMO_AUTODRIVE
+    {
+    bool drive = false;
+    s32 i;
+
+    if (!netpak_present() || gGamestate != RACING) {
+        return;
+    }
+    /* TEMP diag: player-0 state (type + speed*10) so we can see if slot 0 is a
+     * drivable PLAYER_HUMAN and whether input actually moves it. */
+    if ((sRaceFrames % 32) == 0) {
+        netpak_debug_poke(0xA0000000u | (u32)((u16)gPlayers[0].type));
+        netpak_debug_poke(0xB0000000u | (u32)((s32)(gPlayers[0].speed * 10.0f) & 0xFFFF));
+    }
+    /* Only drive once staging + the countdown are fully done, i.e. the kart is
+     * actually under player control. Forcing input during PLAYER_STAGING fights
+     * the game's auto-drive-to-grid and leaves the kart stuck mid-staging. */
+    if (gPlayers[0].type & (PLAYER_STAGING | PLAYER_START_SEQUENCE)) {
+        return;
+    }
+    (void)i;
+    drive = true; /* TEST: drive to verify the race is drivable post-staging */
+    if (!drive) {
+        return;
+    }
+    gControllers[0].button |= A_BUTTON;        /* held accelerate */
+    gControllers[0].buttonPressed |= A_BUTTON; /* and the initial press */
+    gControllers[0].rawStickX = 0;             /* straight, overridden below when steering */
+
+    /* Waypoint autodrive v2: steer the LOCAL kart toward a look-ahead point on the
+     * course path (the same data the CPU AI follows), so scripted karts drive real
+     * laps and stay on track. Each console computes steering from ITS OWN kart's
+     * position -> every console produces DIFFERENT inputs, all flowing through the
+     * real lockstep transport (unlike the identical hold-A drive, which masked
+     * input-identity bugs). */
+    {
+        s32 me = 0;
+        Player* p;
+        u16 cnt;
+#if NET_LOCKSTEP
+        /* the CACHED drive-slot (net_lockstep_local_slot), NOT a fresh
+         * net_menu_node_id() — the fresh read is unreliable at render time (same
+         * bug class as the 4p camera): it returned 0 on joiners, so every console
+         * steered by kart-0's heading and item-tested kart 0's inventory. */
+        me = net_lockstep_local_slot();
+#endif
+        p = &gPlayers[me];
+        cnt = gPathCountByPathIndex[gPlayerPathIndex];
+        if (cnt != 0) {
+            TrackPathPoint* tp = &gTrackPaths[gPlayerPathIndex][(gNearestPathPointByPlayerId[me] + 6u) % cnt];
+            u16 tgt = atan2s(tp->posX - p->pos[0], tp->posZ - p->pos[2]);
+            s16 diff = (s16) (tgt - p->rotation[1]);
+            s32 steer = diff / 328; /* ~full stick at 45 degrees off-target */
+            if (steer > 75) {
+                steer = 75;
+            }
+            if (steer < -75) {
+                steer = -75;
+            }
+            gControllers[0].rawStickX = (s8) steer;
+        }
+
+        /* Scripted item use: when the local kart holds an item, press Z in a short
+         * per-slot staggered window (so screenshots can catch each player's item
+         * going off separately). Poke 0x65 [item<<8|slot] as the screenshot cue. */
+        {
+            static u32 adFrames;
+            u32 phase = adFrames % 400u;
+            adFrames++;
+            if (p->currentItemCopy != ITEM_NONE && phase >= (u32) (me * 40) && phase < (u32) (me * 40 + 4)) {
+                gControllers[0].button |= Z_TRIG;
+                netpak_debug_poke(0x59000000u | (((u32) (u16) p->currentItemCopy & 0xFFu) << 8) | (u32) me);
+            }
+        }
+    }
+    }
+#endif
+}
+
+/* --- Debug harness ------------------------------------------------------- */
+/* Structured state dump over osSyncPrintf. With ares built with the ISViewer
+ * mirror and run with ARES_ISV=1, these lines land in the ares log — a readable
+ * timeline instead of blind register-poking. Grep for "NPDBG". */
+#define NET_DEBUG 0
+#if NET_DEBUG
+extern s16 gCurrentCourseId;
+extern s32 gModeSelection;
+extern s32 gScreenModeSelection;
+/* Structured state dump over the register-poke channel (NP64_TRACE_IO logs each
+ * write to reg 0x0020). Tagged 32-bit words the decoder script turns into
+ * readable lines — a reliable headless state timeline. Tags (high byte):
+ *   0x51 gamestate: (gs<<16)|(mode<<8)|course
+ *   0x52 in-race A: frame (24-bit)
+ *   0x53 in-race B: (stg<<17)|(go<<16)|type16
+ *   0x54 in-race C: (course<<16)|speed10
+ *   0x5F STUCK assert */
+static void net_race_debug_state(void) {
+    static s32 lastGs = -1;
+    static u16 lastType = 0xFFFF;
+    s32 gs = (s32) gGamestate;
+    u16 t = (u16) gPlayers[0].type;
+
+    if (gs != lastGs) {
+        netpak_debug_poke(0x51000000u | (((u32) gs & 0xFF) << 16) |
+                          (((u32) gModeSelection & 0xFF) << 8) |
+                          ((u32) gCurrentCourseId & 0xFF));
+    }
+    if (gs == RACING && ((t != lastType) || (sRaceFrames % 16) == 0)) {
+        u32 stg = (t & PLAYER_STAGING) ? 1u : 0u;
+        u32 go = (t & PLAYER_START_SEQUENCE) ? 0u : 1u; /* go=1 once countdown clears */
+        s32 spd10 = (s32) (gPlayers[0].speed * 10.0f);
+        netpak_debug_poke(0x52000000u | ((u32) sRaceFrames & 0x00FFFFFFu));
+        netpak_debug_poke(0x53000000u | (stg << 17) | (go << 16) | (u32) t);
+        netpak_debug_poke(0x54000000u | (((u32) gCurrentCourseId & 0xFF) << 16) |
+                          ((u32) spd10 & 0xFFFFu));
+    }
+    if (gs == RACING && sRaceFrames == 240 && (t & (PLAYER_STAGING | PLAYER_START_SEQUENCE))) {
+        netpak_debug_poke(0x5F000000u | (u32) t); /* STUCK: still staging at f=240 */
+    }
+    lastGs = gs;
+    lastType = t;
+}
+#endif /* NET_DEBUG */
+
+/* Dense in-race sampler, called every frame from race_logic_loop (which — unlike
+ * net_race_frame up in thread5 — provably ticks on every rendered race frame).
+ * Always defined so main.c can call it unconditionally; a no-op unless NET_DEBUG.
+ * Its own counter, so it doesn't depend on net_race's sRaceFrames. */
+void net_race_debug_tick(void) {
+#if NET_DEBUG
+    static u32 rf;
+    static u16 lastType = 0xFFFF;
+    u16 t = (u16) gPlayers[0].type;
+
+    rf++;
+    if ((t != lastType) || (rf % 8) == 0) {
+        u32 stg = (t & PLAYER_STAGING) ? 1u : 0u;
+        u32 go = (t & PLAYER_START_SEQUENCE) ? 0u : 1u;
+        s32 spd10 = (s32) (gPlayers[0].speed * 10.0f);
+        netpak_debug_poke(0x52000000u | (rf & 0x00FFFFFFu));
+        netpak_debug_poke(0x53000000u | (stg << 17) | (go << 16) | (u32) t);
+        netpak_debug_poke(0x54000000u | (((u32) gCurrentCourseId & 0xFF) << 16) |
+                          ((u32) spd10 & 0xFFFFu));
+    }
+    lastType = t;
+#endif
+}
+
+/* ============================ LOCKSTEP PROTOTYPE ============================
+ * Input-transport layer. Every frame each console broadcasts its controller
+ * state (tagged with player index + frame, with redundancy so a single lost
+ * datagram is recovered from the next packet), and buffers all players' inputs
+ * by (player, frame). Determinism is verified, so feeding the identical input
+ * set into the sim on every console produces the identical world. This
+ * increment builds + validates the transport (both consoles receive each
+ * other's inputs, aligned by frame); the sim rewire — drive the native 2-4p VS
+ * karts from this buffer, single-viewport render, input-delay gate — follows. */
+#define NET_LOCKSTEP 0
+
+/* Test-only: inject artificial inbound packet loss to exercise the stall gate on a
+ * loss-free LAN. Drops a short burst (< LS_REDUN, so the input still arrives in a
+ * later redundant copy and the stall RECOVERS) periodically, phase-offset per node
+ * so the loss is asymmetric (one console stalls while the other doesn't — the real
+ * jitter case). Product = 0. */
+#define NET_LOCKSTEP_LOSS 0
+
+/* Test-only: force every item box to grant a known item (even slots: lightning,
+ * odd slots: star), so the scripted autodrive exercises item interactions —
+ * lightning shrinking every OTHER kart, star-powered collisions tumbling the
+ * victim — visibly on all consoles. Deterministic: itemOverride is shared sim
+ * state and every console writes the identical values before the sim each frame.
+ * Product = 0. */
+#define NET_ITEM_TEST 0
+
+#if NET_LOCKSTEP
+extern s32 net_menu_node_id(void);
+extern s32 net_menu_player_count(void);
+extern bool net_menu_online_active(void);
+extern u16 gRandomSeed16;
+
+#define LS_TAG   0x4C /* 'L' */
+#define LS_RING  64   /* frames of input history buffered */
+#define LS_REDUN 6    /* frames of redundancy per packet (covers ch0 loss) */
+#define LS_DELAY 2    /* input delay (frames) */
+
+typedef struct {
+    u16  button;
+    s8   stickX;
+    s8   stickY;
+    bool have;
+    u32  frame; /* the exact frame this slot's input is for — guards ring ALIASING:
+                 * without it, once the ring wraps every slot reads have=true forever
+                 * and a fast console barrels ahead applying inputs from frame f±64k.
+                 * Invisible with identical scripted inputs (aliased value == value);
+                 * instantly divergent with real differing inputs. */
+} LsInput;
+static LsInput sLsInput[NET_MAX_SLOTS][LS_RING]; /* [player][frame % LS_RING] */
+static u16     sLsPrevBtn[NET_MAX_SLOTS]; /* last APPLIED buttons per player (edge derivation) */
+static s32     sLsMyPlayer = -1;
+static u32     sLsFrame;
+static u16     sLsSimSeed;   /* Path B: private sim RNG state (render can't drift it) */
+static bool    sLsRngActive; /* true while an online lockstep race is running */
+static bool    sLsStall;     /* stall gate: true when a needed input is missing this frame */
+static u32     sLsStallCount; /* diagnostic: total stalled render-frames this race */
+
+/* Local chase-cam: run MK64's REAL camera-follow for the local kart during render,
+ * isolated from the sim by rendering against a COPY of the camera-path block +
+ * camera1 + D_80152300 and restoring the sim's copies after. A persistent local
+ * camera context carries the local camera's own state across frames.
+ *
+ * KNOWN LIMITATION (4p): the follow correctly targets the local kart at 2p, but at
+ * 4p the retargeted cameras on nodes 2,3 mis-follow (they track slot 1) — MK64's
+ * follow keys off internal per-slot camera state, not the Player* we pass, and the
+ * naive fixes (camera->playerId, index) didn't move it. Determinism IS preserved at
+ * 4p in this version; only the camera target is wrong. (A geometric re-anchor
+ * variant targets correctly at any count but broke determinism at 4p — render
+ * mutates sim-adjacent state we couldn't fully isolate — so it's not used.) */
+#define LS_CAMBLK_MAX 0x1A00 /* >= the cpu_vehicles_camera_path.c block (~0x1548) */
+static u8      sCamSimBlk[LS_CAMBLK_MAX]; /* sim's block, saved across the local follow */
+static u8      sCamLocBlk[LS_CAMBLK_MAX]; /* local camera's persistent block context */
+static Camera  sCamSim1, sCamLoc1;        /* sim camera1 / local camera1 */
+static u16     sCamSimD300[4], sCamLocD300[4];
+static bool    sCamLocInit;               /* local context seeded yet? (reset per race) */
+static s32     sCamActive;                /* local slot in effect this frame (0 = none) */
+
+typedef struct {
+    u8  tag;       /* LS_TAG */
+    u8  player;    /* sender player index (== node id) */
+    u8  count;     /* frames included in in[] */
+    u8  pad;
+    u16 baseFrame; /* frame of in[0] */
+    u16 pad2;
+    struct {
+        u16 button;
+        s8  stickX;
+        s8  stickY;
+    } in[LS_REDUN];
+} LsPacket;
+
+static void net_lockstep_reset(void) {
+    bzero(sLsInput, sizeof(sLsInput));
+    bzero(sLsPrevBtn, sizeof(sLsPrevBtn));
+    sLsFrame = 0;
+    sLsMyPlayer = net_menu_node_id();
+    sLsSimSeed = 0x1234; /* shared, identical on every console -> synced sim RNG */
+
+    /* Path A (surgical): the CPU-AI state block (all of cpu_vehicles_camera_path.c's
+     * per-CPU behaviour/path/steering/item-strategy data) is NOT reset at race start,
+     * so it carries menu-history residue that differs host vs joiner (diverges at
+     * frame 0, then propagates into a CPU kart's position ~frame 300). The residue's
+     * VALUE is irrelevant to correctness (offline both consoles shared identical
+     * residue and stayed locked) — only that both AGREE. Zero it identically on every
+     * console at race entry so the CPU sim begins from the same state everywhere.
+     * Applied on the first RACING frame, before the sim reads it (net_lockstep_tick
+     * runs pre-sim). Anchored to the block's boundary symbols (not absolute
+     * addresses) so a relink can't silently mis-target it. */
+    {
+        u8* start = unk_cpu_vehicles_camera_path_pad;
+        u8* end = LS_CPU_STATE_END;
+        bzero(start, (u32) (end - start));
+    }
+
+    sCamLocInit = false; /* fresh local-camera context each race */
+    sLsStall = false;
+    sLsStallCount = 0;
+}
+#endif /* NET_LOCKSTEP (module) — net_lockstep_tick below is always defined */
+
+/* Full per-frame lockstep step — call AFTER read_controllers during an online
+ * race. Converts the extra player slots (1..np-1) to human so they read a
+ * controller instead of AI, captures the local input, exchanges with peers, and
+ * drives every player kart from the shared buffer at (frame - LS_DELAY). Emits a
+ * sim-state hash (tag 0x76/0x77) so two consoles can be checked for an identical
+ * world. No stall gate yet (LAN + redundancy assumed); that comes next. */
+void net_lockstep_tick(void) {
+#if NET_LOCKSTEP
+    static netpak_pkt_t pkt; /* 1 KB — keep off the stack */
+    static s32 prevRacing;
+    LsPacket p;
+    s32 me, np, i, base;
+    u32 f, df;
+    s32 racing = (gGamestate == RACING);
+
+    if (!netpak_present() || !net_menu_online_active() || !racing) {
+        prevRacing = racing;
+        sLsRngActive = false;
+        return;
+    }
+    if (!prevRacing) {
+        net_lockstep_reset(); /* fresh input timeline at race start */
+    }
+    prevRacing = racing;
+
+    me = sLsMyPlayer;
+    if (me < 0) {
+        me = net_menu_node_id();
+        sLsMyPlayer = me;
+    }
+    if (me < 0 || me >= NET_MAX_SLOTS) {
+        return;
+    }
+    np = net_menu_player_count();
+    if (np > NET_MAX_SLOTS) {
+        np = NET_MAX_SLOTS;
+    }
+
+    /* Make the non-local player slots human-controlled (they read a controller
+     * instead of running AI). Identical on every console -> identical sim. Keep
+     * the staging/countdown bits so the race intro still plays out. */
+    for (i = 1; i < np; i++) {
+        gPlayers[i].type = (gPlayers[i].type & ~(u32) PLAYER_CPU) | PLAYER_HUMAN;
+    }
+
+#if NET_ITEM_TEST
+    /* Force every box to grant a known item (shared sim state, identical values
+     * written on every console pre-sim -> deterministic). ACTOR-spawning items
+     * this pass: bananas (dropped on the road) + green shells (fired) — verifies
+     * item actors exist identically in every sim; lightning/star are instant
+     * effects and never spawn an actor. */
+    for (i = 0; i < np; i++) {
+        playerHUD[i].itemOverride = (i & 1) ? ITEM_GREEN_SHELL : ITEM_BANANA;
+    }
+#endif
+
+    f = sLsFrame;
+
+    /* Path B — isolated sim RNG. Load the sim's private RNG state into the shared
+     * LFSR before the sim runs this frame; net_lockstep_rng_save() (called from
+     * race_logic_loop after the sim, before render) snapshots it back. Render and
+     * menu code still draw from gRandomSeed16 but can no longer perturb the sim
+     * stream, so both consoles consume RNG identically. Seeded to a shared
+     * constant at race start (net_lockstep_reset); a host-broadcast base can add
+     * per-race variety later. */
+    gRandomSeed16 = sLsSimSeed;
+    sLsRngActive = true;
+
+    /* capture local input (port 0 = this console's player index `me`). Capture ONCE
+     * per frame: if we're continuing a stall (sLsStall still set from last tick, f
+     * hasn't advanced) the input for frame f is already committed + broadcast to the
+     * peer, so re-reading the controller here would rewrite an input the peer may be
+     * about to consume. Only capture on a fresh frame. */
+    if (!sLsStall) {
+        LsInput* s = &sLsInput[me][f % LS_RING];
+        s->button = gControllers[0].button;
+        s->stickX = (s8) gControllers[0].rawStickX;
+        s->stickY = (s8) gControllers[0].rawStickY;
+        s->have = true;
+        s->frame = f;
+    }
+
+    /* broadcast my last LS_REDUN frames (redundancy covers a dropped datagram) */
+    base = (s32) f - (LS_REDUN - 1);
+    if (base < 0) {
+        base = 0;
+    }
+    p.tag = LS_TAG;
+    p.player = (u8) me;
+    p.count = (u8) (f - (u32) base + 1);
+    p.pad = 0;
+    p.baseFrame = (u16) base;
+    p.pad2 = 0;
+    for (i = 0; i < (s32) p.count; i++) {
+        LsInput* s = &sLsInput[me][(base + i) % LS_RING];
+        p.in[i].button = s->button;
+        p.in[i].stickX = s->stickX;
+        p.in[i].stickY = s->stickY;
+    }
+    netpak_send(NETPAK_BROADCAST, 0, &p, sizeof(p));
+
+    /* ingest remote inputs (stored at the SENDER's frame index) */
+#if NET_LOCKSTEP_LOSS
+    {
+        /* drop ALL inbound this tick during a 3-of-41-tick burst, phase-offset by
+         * node id so the two consoles lose different windows (asymmetric jitter). */
+        static u32 sLossTick;
+        sLossTick++;
+        if (((sLossTick + (u32) me * 17u) % 41u) < 3u) {
+            while (netpak_recv(&pkt) == 0) {
+                /* discard */
+            }
+        }
+    }
+#endif
+    while (netpak_recv(&pkt) == 0) {
+        if (pkt.ch == 0 && pkt.len >= 8 && pkt.data[0] == LS_TAG) {
+            LsPacket* rp = (LsPacket*) pkt.data;
+            s32 pl = rp->player;
+            s32 c = rp->count;
+            if (pl >= 0 && pl < NET_MAX_SLOTS && pl != me) {
+                if (c > LS_REDUN) {
+                    c = LS_REDUN;
+                }
+                for (i = 0; i < c; i++) {
+                    u32 fr = (u32) rp->baseFrame + (u32) i;
+                    LsInput* d = &sLsInput[pl][fr % LS_RING];
+                    d->button = rp->in[i].button;
+                    d->stickX = rp->in[i].stickX;
+                    d->stickY = rp->in[i].stickY;
+                    d->have = true;
+                    d->frame = fr;
+                }
+            }
+        }
+    }
+
+    /* STALL GATE. Simulate logical frame df only when EVERY player's input for it
+     * has arrived; otherwise freeze (race_logic_loop skips the sim while
+     * net_lockstep_stalled()) rather than applying a mismatched/stale input, which
+     * is what desyncs. The frame doesn't advance, and we keep broadcasting above so
+     * the late input is delivered; when it arrives we resume. Both consoles only
+     * ever simulate a given df with the identical complete input set, so the
+     * logical-frame sequence is identical regardless of how long either stalled. */
+    df = (f >= LS_DELAY) ? (f - LS_DELAY) : 0;
+    {
+        bool ready = true;
+        for (i = 0; i < np; i++) {
+            LsInput* s = &sLsInput[i][df % LS_RING];
+            /* the slot must hold the input for EXACTLY df — have alone aliases once
+             * the ring wraps (input from df±64k would silently pass) */
+            if (!s->have || s->frame != df) {
+                ready = false;
+                break;
+            }
+        }
+
+        if (!ready) {
+            sLsStall = true;
+            sLsStallCount++;
+            netpak_debug_poke(0x68000000u | (sLsStallCount & 0xFFFFFFu)); /* stall count */
+        } else {
+            sLsStall = false;
+
+            /* drive every player kart from the delayed frame's inputs. Button edges
+             * derive from the last APPLIED buttons (sLsPrevBtn), not a ring lookup
+             * of df-1 — that slot may already be overwritten by frame df-1+64. The
+             * applied sequence is the same on every console, so edges match. */
+            for (i = 0; i < np; i++) {
+                LsInput* s = &sLsInput[i][df % LS_RING];
+                u16 cur = s->button;
+                u16 prev = sLsPrevBtn[i];
+                gControllers[i].button = cur;
+                gControllers[i].buttonPressed = (u16) (cur & ~prev);
+                gControllers[i].buttonDepressed = (u16) (~cur & prev);
+                gControllers[i].rawStickX = s->stickX;
+                gControllers[i].rawStickY = s->stickY;
+                sLsPrevBtn[i] = cur;
+            }
+
+            /* validation A: hash the applied input SET for df (tag 0x74/0x75). */
+            {
+                u32 hi = 2166136261u;
+                for (i = 0; i < np; i++) {
+                    LsInput* s = &sLsInput[i][df % LS_RING];
+                    hi ^= ((u32) s->button << 16) ^ ((u32) (u8) s->stickX << 8) ^ ((u32) (u8) s->stickY) ^ (u32) i;
+                    hi *= 16777619u;
+                }
+                netpak_debug_poke(0x74000000u | (df & 0xFFFFFFu));
+                netpak_debug_poke(0x75000000u | (hi & 0xFFFFFFu));
+            }
+
+            /* validation B: hash all 8 karts' sim state (tag 0x76 frame, 0x77 hash)
+             * — two consoles running the same inputs must produce the identical
+             * hash. Keyed by df (the logical frame), so stalls don't misalign it. */
+            {
+                u32 h = 2166136261u;
+                s32 pi, fi;
+                for (pi = 0; pi < NUM_PLAYERS; pi++) {
+                    Player* pl = &gPlayers[pi];
+                    u32 fld[8];
+                    memcpy(&fld[0], &pl->pos[0], 4);
+                    memcpy(&fld[1], &pl->pos[1], 4);
+                    memcpy(&fld[2], &pl->pos[2], 4);
+                    fld[3] = ((u32) (u16) pl->rotation[0] << 16) | (u16) pl->rotation[1];
+                    fld[4] = ((u32) (u16) pl->rotation[2] << 16) | (u16) pl->lapCount;
+                    memcpy(&fld[5], &pl->speed, 4);
+                    fld[6] = pl->effects;
+                    fld[7] = (u32) pl->type;
+                    for (fi = 0; fi < 8; fi++) {
+                        h ^= fld[fi];
+                        h *= 16777619u;
+                    }
+                }
+                netpak_debug_poke(0x76000000u | (df & 0xFFFFFFu));
+                netpak_debug_poke(0x77000000u | (h & 0xFFFFFFu));
+            }
+
+            /* TEMP diag: per-kart hash (0x6F frame, 0x60..0x67 karts) to localize a
+             * divergence to a specific kart. Remove when solved. */
+            {
+                s32 pi, fi;
+                netpak_debug_poke(0x6F000000u | (df & 0xFFFFFFu));
+                for (pi = 0; pi < NUM_PLAYERS; pi++) {
+                    Player* pl = &gPlayers[pi];
+                    u32 kh = 2166136261u;
+                    u32 fld[8];
+                    memcpy(&fld[0], &pl->pos[0], 4);
+                    memcpy(&fld[1], &pl->pos[1], 4);
+                    memcpy(&fld[2], &pl->pos[2], 4);
+                    fld[3] = ((u32) (u16) pl->rotation[0] << 16) | (u16) pl->rotation[1];
+                    fld[4] = ((u32) (u16) pl->rotation[2] << 16) | (u16) pl->lapCount;
+                    memcpy(&fld[5], &pl->speed, 4);
+                    fld[6] = pl->effects;
+                    fld[7] = (u32) pl->type;
+                    for (fi = 0; fi < 8; fi++) {
+                        kh ^= fld[fi];
+                        kh *= 16777619u;
+                    }
+                    netpak_debug_poke((0x60000000u + ((u32) pi << 24)) | (kh & 0xFFFFFFu));
+                }
+            }
+
+            sLsFrame++;
+        }
+    }
+#endif /* NET_LOCKSTEP */
+}
+
+/* Stall-gate query for race_logic_loop: true when net_lockstep_tick could not
+ * assemble the full input set for the frame to simulate, so the sim must be held
+ * this render-frame (both consoles freeze in sync). Always false outside lockstep. */
+bool net_lockstep_stalled(void) {
+#if NET_LOCKSTEP
+    return sLsStall;
+#else
+    return false;
+#endif
+}
+
+/* Path B Hook B: snapshot the sim's private RNG state after the per-frame sim work
+ * and before rendering, so render (which also advances gRandomSeed16) can't drift
+ * the sim stream. Paired with the load at the top of net_lockstep_tick. No-op
+ * unless a lockstep race is active. Call from race_logic_loop between sim and
+ * render. */
+void net_lockstep_rng_save(void) {
+#if NET_LOCKSTEP
+    extern u16 gRandomSeed16;
+    if (sLsRngActive) {
+        sLsSimSeed = gRandomSeed16;
+    }
+#endif
+}
+
+/* Camera retarget (render-only): which slot the local 1P viewport should follow.
+ * In an online lockstep race every console runs the same 8-kart sim but each
+ * player OWNS a different slot (= node id), so the local camera must track the
+ * local kart, not slot 0. Returns 0 everywhere else (offline / snapshot mode /
+ * host node 0), so existing behavior is unchanged. Determinism-safe: only the
+ * camera struct depends on this, never gPlayers. */
+s32 net_lockstep_local_slot(void) {
+#if NET_LOCKSTEP
+    extern bool net_menu_online_active(void);
+    extern s32 net_menu_node_id(void);
+    if (netpak_present() && net_menu_online_active()) {
+        /* Use the SAME slot this console drives its input into (sLsMyPlayer, cached
+         * once at race entry), not a fresh net_menu_node_id() — the latter can read
+         * back inconsistently at render time (observed at 4p: several consoles got 0
+         * and all followed slot 0). Tying the camera to the drive-slot guarantees
+         * each console views its own kart. Fall back to a fresh id pre-cache. */
+        s32 s = (sLsMyPlayer >= 0) ? sLsMyPlayer : net_menu_node_id();
+        if (s > 0 && s < NUM_PLAYERS) {
+            return s;
+        }
+    }
+#endif
+    return 0;
+}
+
+/* Robust local chase-cam, part 1 (call from race_logic_loop AFTER the sim, BEFORE
+ * render_player_one_1p_screen). Saves the sim's camera state (camera1 + camera-path
+ * block + D_80152300), swaps in the LOCAL player's persistent camera context, and
+ * runs MK64's real camera-follow for the local kart — so the local view gets every
+ * genuine reaction (spinout/hit shake, wall bounce, drift lean, Lakitu rescue) for
+ * the LOCAL kart, not slot 0's. net_lockstep_cam_pop() then restores the sim state,
+ * so the shared sim never sees the swap (determinism preserved). No-op offline/host. */
+void net_lockstep_cam_push(void) {
+#if NET_LOCKSTEP
+    s32 ls = net_lockstep_local_slot();
+    u32 blk;
+
+    sCamActive = 0;
+    if (ls == 0) {
+        return; /* host / offline: slot 0 is already this console's kart */
+    }
+    blk = (u32) (LS_CPU_STATE_END - unk_cpu_vehicles_camera_path_pad);
+    if (blk > LS_CAMBLK_MAX) {
+        return; /* safety: never overflow the save buffers */
+    }
+    sCamActive = ls;
+
+    /* save the sim's camera state (must be byte-identical again after pop) */
+    memcpy(sCamSimBlk, unk_cpu_vehicles_camera_path_pad, blk);
+    sCamSim1 = *camera1;
+    memcpy(sCamSimD300, D_80152300, sizeof(sCamSimD300));
+
+    /* first render of a race: seed the local context from the sim so it starts sane */
+    if (!sCamLocInit) {
+        memcpy(sCamLocBlk, sCamSimBlk, blk);
+        sCamLoc1 = sCamSim1;
+        memcpy(sCamLocD300, sCamSimD300, sizeof(sCamLocD300));
+        sCamLocInit = true;
+    }
+
+    /* render against the LOCAL camera context (a copy), and advance the real follow
+     * for the local kart. Rendering against the copy is what keeps the sim's camera
+     * state — and everything the render mutates through it — isolated (a geometric
+     * variant that rendered against the sim's copy desynced at 4p). */
+    memcpy(unk_cpu_vehicles_camera_path_pad, sCamLocBlk, blk);
+    *camera1 = sCamLoc1;
+    memcpy(D_80152300, sCamLocD300, sizeof(sCamLocD300));
+    camera1->playerId = (s16) ls;
+
+    /* ROOT-CAUSE FIX: the intro→chase camera-mode transition (func_8001F87C) is
+     * edge-triggered — it fires only on the exact frame the shared frame-counter
+     * D_80164A2C hits 60, and the SIM's own follow consumes that edge. The local
+     * context therefore stays in intro mode 8 forever (positioner ignores which
+     * kart we pass — this is why joiners tracked slot 1 at any player count).
+     * Do the transition ourselves: once the local kart is racing (staging bits
+     * clear), force chase mode 1 and snap the camera heading to the local kart,
+     * exactly what F87C does at the edge. */
+    if ((D_80152300[0] == 8) && !(gPlayers[ls].type & (PLAYER_STAGING | PLAYER_START_SEQUENCE))) {
+        D_80152300[0] = 1;
+        camera1->rot[1] = gPlayers[ls].rotation[1];
+        camera1->unk_2C = gPlayers[ls].rotation[1];
+    }
+    /* index stays 0: it selects the per-SCREEN camera tuning state (chase distance/
+     * height/zoom arrays), which 1P mode only maintains for screen 0 — passing ls
+     * left those zeroed, putting the camera on the ground at the kart's tail. The
+     * kart to follow is carried by the Player* + camera->playerId, not the index. */
+    func_8001EE98(&gPlayers[ls], camera1, 0);
+
+    /* Course-SEGMENT culling: the renderer picks the visible course chunk from
+     * wrapper->player's track section (render_courses.c uses
+     * get_track_section_id(player->collision.meshIndexZX)), and that player is
+     * hardwired to gPlayers[0] — so a camera far from slot 0 renders slot 0's
+     * chunk and void everywhere else ("karts floating off-track"). Point the
+     * renderer at the LOCAL kart for this render; pop restores it. */
+    D_800DC5EC->player = &gPlayers[ls];
+#endif
+}
+
+/* Local chase-cam, part 2 (call AFTER render_player_one_1p_screen): persist the local
+ * camera context, then restore the sim's camera state so the next sim frame is
+ * bit-identical. Pairs with cam_push. */
+void net_lockstep_cam_pop(void) {
+#if NET_LOCKSTEP
+    u32 blk;
+
+    if (sCamActive == 0) {
+        return;
+    }
+    blk = (u32) (LS_CPU_STATE_END - unk_cpu_vehicles_camera_path_pad);
+    if (blk > LS_CAMBLK_MAX) {
+        blk = LS_CAMBLK_MAX;
+    }
+
+    /* persist the local camera's evolved state for next frame */
+    memcpy(sCamLocBlk, unk_cpu_vehicles_camera_path_pad, blk);
+    sCamLoc1 = *camera1;
+    memcpy(sCamLocD300, D_80152300, sizeof(sCamLocD300));
+
+    /* restore the sim's camera state -> determinism preserved */
+    memcpy(unk_cpu_vehicles_camera_path_pad, sCamSimBlk, blk);
+    *camera1 = sCamSim1;
+    memcpy(D_80152300, sCamSimD300, sizeof(sCamSimD300));
+    D_800DC5EC->player = &gPlayers[0]; /* restore the renderer's player (segment culling) */
+
+    sCamActive = 0;
+#endif
+}
+
+extern bool net_menu_online_active(void);
+extern u16 gRandomSeed16; /* gate: netcode only in online races */
+
+void net_race_frame(void) {
+    u32 epoch;
+
+    if (!netpak_present()) {
+        return;
+    }
+
+    /* Offline races (GP / VS / Time Trials) run with pure local input — the
+     * in-race netcode only ever engages for an ONLINE race. */
+    if (!net_menu_online_active()) {
+        return;
+    }
+
+    /* A savestate/reset/reconnect invalidates everyone's continuity: drop all
+     * puppet state and let fresh snapshots re-establish it (README §5). */
+    epoch = netpak_epoch();
+    if (epoch != sNetEpoch) {
+        sNetEpoch = epoch;
+        net_race_reset();
+    }
+
+    /* Reset replication when entering a race so slot mapping starts clean. */
+    if (gGamestate == RACING && sPrevGamestate != RACING) {
+        net_race_reset();
+        sRaceFrames = 0;
+#if NET_LOCKSTEP
+        net_lockstep_reset();
+#endif
+    }
+    sPrevGamestate = gGamestate;
+
+#if NET_DEBUG
+    net_race_debug_state();
+#endif
+
+    if (gGamestate != RACING) {
+        return;
+    }
+    sRaceFrames++;
+
+#if NET_DETERMINISM_TEST
+    /* Emit (frame, state-hash) and do NO networking, so the two instances are
+     * fully independent identical sims. Compare the hash streams by frame. */
+    {
+        u32 h = 2166136261u; /* FNV-1a over all 8 karts' sim-relevant fields */
+        s32 pi, fi;
+        for (pi = 0; pi < NUM_PLAYERS; pi++) {
+            Player* p = &gPlayers[pi];
+            u32 f[8];
+            memcpy(&f[0], &p->pos[0], 4);
+            memcpy(&f[1], &p->pos[1], 4);
+            memcpy(&f[2], &p->pos[2], 4);
+            f[3] = ((u32)(u16) p->rotation[0] << 16) | (u16) p->rotation[1];
+            f[4] = ((u32)(u16) p->rotation[2] << 16) | (u16) p->lapCount;
+            memcpy(&f[5], &p->speed, 4);
+            f[6] = p->effects;
+            f[7] = (u32) p->type;
+            for (fi = 0; fi < 8; fi++) {
+                h ^= f[fi];
+                h *= 16777619u;
+            }
+        }
+        netpak_debug_poke(0x76000000u | ((u32) sRaceFrames & 0xFFFFFFu));
+        netpak_debug_poke(0x77000000u | (h & 0xFFFFFFu));
+    }
+    return;
+#endif
+
+#if NET_LOCKSTEP
+    return; /* lockstep runs its own tick after read_controllers (main.c) */
+#endif
+
+    net_race_rx();
+    net_race_apply_characters();
+    net_race_scan_hits();
+    net_race_interpolate();
+    net_race_tx();
+    net_race_events_tx();
+
+#if NET_DEBUG
+    /* Heartbeat: proves net_race_frame ticks in-race, and reports how many peer
+     * puppet slots are live (tag 0x56 = (frame<<8)|puppetCount). */
+    {
+        s32 pc = 0, i;
+        for (i = 1; i < NET_MAX_SLOTS; i++) {
+            if (sPeerUsed[i]) {
+                pc++;
+            }
+        }
+        netpak_debug_poke(0x56000000u | (((u32) sRaceFrames & 0xFFFF) << 8) | ((u32) pc & 0xFF));
+    }
+#endif
+}
+
+/* Returns true exactly once, when the device is connected and it's time to
+ * jump into the networked race. Latches so it never fires twice. The caller
+ * (main.c) then performs the actual menu-bypass race launch.
+ *
+ * Readiness: device present, past the boot grace, LINK_UP, and either in a
+ * relay SESSION (real multiplayer) or LINK_UP held long enough that we infer
+ * loopback (single-instance self-test). */
+bool net_race_autostart_check(void) {
+    u32 status;
+    u32 now;
+
+    if (sAutoStarted || !netpak_present()) {
+        return false;
+    }
+    if (gGamestate == RACING) {
+        return false; /* already racing */
+    }
+    if (gGlobalTimer < NET_AUTOSTART_BOOT_FRAMES) {
+        return false; /* still booting */
+    }
+
+    status = netpak_status();
+    if (!(status & NETPAK_STATUS_LINK_UP)) {
+        sLinkUpUs = 0; /* link not up yet; (re)arm the loopback timer */
+        return false;
+    }
+
+    now = net_now_us();
+    if (sLinkUpUs == 0) {
+        sLinkUpUs = now;
+    }
+    if ((status & NETPAK_STATUS_SESSION) ||
+        (now - sLinkUpUs > NET_AUTOSTART_LOOPBACK_US)) {
+        sAutoStarted = true;
+        return true;
+    }
+    return false;
+}
+
+bool net_race_apply_puppet(Player* player, s32 playerId) {
+    RemoteSlot* r;
+
+    if (!netpak_present() || !net_menu_online_active()) {
+        return false; /* offline race: leave every kart to local simulation */
+    }
+    if (playerId <= 0 || playerId >= NUM_PLAYERS) {
+        return false; /* never puppet the local slot 0 */
+    }
+    r = &sRemote[playerId];
+    if (!r->valid) {
+        return false; /* no snapshot yet — leave the slot as a normal CPU */
+    }
+
+    /* A remote-driven puppet is a fully active racer. Clear the staging/countdown
+     * flags it would otherwise keep forever: apply_puppet skips local simulation,
+     * so the puppet never runs the code that clears them. Any kart left flagged
+     * PLAYER_STAGING stalls the GP intro camera — func_8001F87C waits for all 8
+     * karts past staging before handing over to the racing camera, so a stuck
+     * puppet freezes the view at the start line (the reported bug). */
+    player->type &= ~(PLAYER_STAGING | PLAYER_START_SEQUENCE);
+
+    /* oldPos before we move it, so per-frame deltas the renderer/anim reads
+     * stay sane. */
+    player->oldPos[0] = player->pos[0];
+    player->oldPos[1] = player->pos[1];
+    player->oldPos[2] = player->pos[2];
+
+    /* Apply the frame's interpolated transform (computed in net_race_frame). */
+    player->pos[0] = r->renderPos[0];
+    player->pos[1] = r->renderPos[1];
+    player->pos[2] = r->renderPos[2];
+    player->rotation[1] = r->renderYaw; /* yaw drives the billboard sprite */
+    player->speed = r->speed;
+    player->currentSpeed = r->speed;
+
+    /* Replicate the remote kart's visual state so opponents show their star
+     * sparkle, mushroom/mini-turbo boost, spinout, and squish/shrink instead of
+     * looking plain. Display-only: the puppet skips local sim, so these flags
+     * just feed render_player (STAR_EFFECT sparkle, SQUISH scale, etc.). */
+    player->effects = r->effects;
+
+    /* characterId is applied once per change in net_race_apply_characters()
+     * (called from net_race_frame), which also reloads the body palette — doing
+     * it here (per subtick) would re-DMA the palette needlessly. */
+
+    return true; /* caller skips local simulation for this slot */
+}

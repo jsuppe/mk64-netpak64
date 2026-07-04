@@ -476,6 +476,8 @@ void func_8009E020(s32, s32);
 void func_8009E088(s32, s32);
 void func_8009E0F0(s32);
 void func_8009E1C0(void);
+void func_online_fade(void);       // NetPak64: MAIN_MENU <-> NETWORK_VS_MENU fade
+void func_online_start_fade(void); // NetPak64: lobby -> character select
 void func_8009E1E4(void);
 void func_8009E208(void);
 void func_8009E230(void);

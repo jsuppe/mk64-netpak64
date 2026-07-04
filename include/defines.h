@@ -148,6 +148,7 @@ enum PlayerId {
 #define TIME_TRIALS 1
 #define VERSUS 2
 #define BATTLE 3
+#define ONLINE 4 // NetPak64 online multiplayer (mode-select entry)
 
 /**
  * @brief Options for gCCSelection
@@ -206,6 +207,7 @@ enum { COURSE_ONE, COURSE_TWO, COURSE_THREE, COURSE_FOUR };
 #define CHARACTER_SELECT_MENU 12
 #define COURSE_SELECT_MENU 13
 #define RACING_DUPLICATE 14
+#define NETWORK_VS_MENU 15 // NetPak64 online menu screen (host/join/lobby)
 
 /**
  * @brief Options for gGameState gGotoMode and gGotoMenu

@@ -21,6 +21,7 @@
 #include "code_80057C60.h"
 #include "cpu_vehicles_camera_path.h"
 #include "sounds.h"
+#include "net_race.h"
 
 extern s32 D_8018D168;
 
@@ -617,6 +618,11 @@ void func_80028D3C(Player* player, Camera* camera, s8 playerId, s8 screenId) {
 
 void func_80028E70(Player* player, Camera* camera, s8 playerId, s8 screenId) {
     if ((player->type & PLAYER_EXISTS) == PLAYER_EXISTS) {
+        // NetPak64: if this slot is a remote-driven puppet, apply the latest
+        // networked transform and skip local simulation for it entirely.
+        if (net_race_apply_puppet(player, playerId)) {
+            return;
+        }
         switch (gGamestate) {
             case ENDING:
                 if (!(player->type & PLAYER_START_SEQUENCE)) {

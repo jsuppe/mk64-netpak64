@@ -9,6 +9,7 @@
 
 #include "code_800029B0.h"
 #include "menu_items.h"
+#include "net_menu.h"
 #include "cpu_vehicles_camera_path.h"
 #include "code_8006E9C0.h"
 #include "menus.h"
@@ -2385,9 +2386,18 @@ void func_80094A64(struct GfxPool* pool) {
         case CONTROLLER_PAK_MENU:
         case MAIN_MENU:
         case CHARACTER_SELECT_MENU:
+            handle_menus_default();
+            func_80099AEC();
+            break;
         case COURSE_SELECT_MENU:
             handle_menus_default();
             func_80099AEC();
+            net_online_barrier_render(); // NetPak64: "waiting for all players" popup
+            break;
+        case NETWORK_VS_MENU: // NetPak64 online screen
+            handle_menus_default();
+            func_80099AEC();
+            net_menu_render();
             break;
     }
     func_8009CA2C();
@@ -2486,6 +2496,10 @@ void setup_menus(void) {
                 add_menu_item(MAIN_MENU_TIME_TRIALS_DATA, 0, 0, MENU_ITEM_PRIORITY_6);
                 add_menu_item(MAIN_MENU_TIME_TRIALS_BEGIN, 0, 0, MENU_ITEM_PRIORITY_6);
                 add_menu_item(MENU_ITEM_TYPE_01B, 0, 0, MENU_ITEM_PRIORITY_C);
+                break;
+            case NETWORK_VS_MENU: // NetPak64 online screen
+                add_menu_item(MAIN_MENU_BACKGROUND, 0, 0, MENU_ITEM_PRIORITY_2);
+                net_menu_reset();
                 break;
             case CHARACTER_SELECT_MENU:
                 add_menu_item(CHARACTER_SELECT_BACKGROUND, 0, 0, MENU_ITEM_PRIORITY_2);
@@ -4941,11 +4955,18 @@ void func_8009CE64(s32 arg0) {
                             break;
                     }
                     break;
+                case MENU_FADE_TYPE_ONLINE: /* NetPak64: MAIN_MENU <-> NETWORK_VS_MENU */
+                    gMenuSelection = (gMenuSelection == NETWORK_VS_MENU) ? MAIN_MENU : NETWORK_VS_MENU;
+                    break;
+                case MENU_FADE_TYPE_ONLINE_START: /* NetPak64: lobby -> character select */
+                    gMenuSelection = CHARACTER_SELECT_MENU;
+                    break;
             }
             if (gFadeModeSelection == FADE_MODE_NONE) {
                 gFadeModeSelection = FADE_MODE_MAIN;
             }
-            if (gMenuSelection >= 0xE) {
+            // NetPak64: the online screen sits at 15 (>= 0xE) but must NOT launch a race.
+            if (gMenuSelection >= 0xE && gMenuSelection != NETWORK_VS_MENU) {
                 gGamestateNext = 4;
                 if (gModeSelection == 1) {
                     gGhostPlayerInit = (s8) 1;
@@ -5296,6 +5317,18 @@ void func_8009E17C(u32 arg0) {
 void func_8009E1C0(void) {
     func_8009DFE0(10);
     gMenuFadeType = MENU_FADE_TYPE_MAIN;
+}
+
+// NetPak64: fade for the ONLINE transition (MAIN_MENU <-> NETWORK_VS_MENU).
+void func_online_fade(void) {
+    func_8009DFE0(10);
+    gMenuFadeType = MENU_FADE_TYPE_ONLINE;
+}
+
+// NetPak64: leave the lobby into the real character-select flow.
+void func_online_start_fade(void) {
+    func_8009DFE0(10);
+    gMenuFadeType = MENU_FADE_TYPE_ONLINE_START;
 }
 
 void func_8009E1E4(void) {

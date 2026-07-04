@@ -46,6 +46,9 @@ SECTIONS
    {
       BUILD_DIR/asm/entry.o(.text);
       BUILD_DIR/src/main.o(.text*);
+      BUILD_DIR/src/netpak_mk64.o(.text*);
+      BUILD_DIR/src/net_race.o(.text*);
+      BUILD_DIR/src/net_menu.o(.text*);
       BUILD_DIR/src/code_800029B0.o(.text*);
       BUILD_DIR/src/profiler.o(.text*);
       BUILD_DIR/src/crash_screen.o(.text*);
@@ -215,6 +218,9 @@ SECTIONS
       BUILD_DIR/src/os/ldiv.o(.text*);
       BUILD_DIR/data/rsp.o(.text);
       BUILD_DIR/src/main.o(.data*);
+      BUILD_DIR/src/netpak_mk64.o(.data*);
+      BUILD_DIR/src/net_race.o(.data*);
+      BUILD_DIR/src/net_menu.o(.data*);
       BUILD_DIR/src/code_800029B0.o(.data*);
       BUILD_DIR/src/profiler.o(.data*);
       BUILD_DIR/src/crash_screen.o(.data*);
@@ -267,6 +273,9 @@ SECTIONS
       BUILD_DIR/src/os/osViData.o(.data*);
       BUILD_DIR/src/os/_Litob.o(.data*);
       BUILD_DIR/src/main.o(.rodata*);
+      BUILD_DIR/src/netpak_mk64.o(.rodata*);
+      BUILD_DIR/src/net_race.o(.rodata*);
+      BUILD_DIR/src/net_menu.o(.rodata*);
       BUILD_DIR/src/animation.o(.rodata*);
       BUILD_DIR/src/code_800029B0.o(.rodata*);
       BUILD_DIR/src/cpu_vehicles_camera_path.jp.o(.rodata*);
@@ -323,6 +332,9 @@ SECTIONS
 
    BEGIN_NOLOAD(main) {
       BUILD_DIR/src/main.o(.bss*);
+      BUILD_DIR/src/netpak_mk64.o(.bss*);
+      BUILD_DIR/src/net_race.o(.bss*);
+      BUILD_DIR/src/net_menu.o(.bss*);
       BUILD_DIR/src/code_800029B0.o(.bss*);
       BUILD_DIR/src/profiler.o(.bss*);
       BUILD_DIR/src/crash_screen.o(.bss*);

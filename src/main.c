@@ -39,6 +39,8 @@
 #include <debug.h>
 #include "crash_screen.h"
 #include "buffers/gfx_output_buffer.h"
+#include "netpak.h"
+#include "net_race.h"
 
 void func_80091B78(void);
 void audio_init(void);
@@ -574,6 +576,7 @@ void race_logic_loop(void) {
     s16 i;
     u16 rotY;
 
+    net_race_debug_tick(); /* dense in-race state sampling for the debug harness */
     gMatrixObjectCount = 0;
     gMatrixEffectCount = 0;
     if (gIsGamePaused != 0) {
@@ -596,7 +599,11 @@ void race_logic_loop(void) {
         case SCREEN_MODE_1P:
             gTickSpeed = 2;
             replays_loop();
-            if (gIsGamePaused == 0) {
+            /* Lockstep stall gate: hold the sim this render-frame when a peer input
+             * for the frame to simulate hasn't arrived (both consoles freeze in
+             * sync). Render still runs below, so the frozen scene keeps drawing.
+             * Always false outside an online lockstep race. */
+            if (gIsGamePaused == 0 && !net_lockstep_stalled()) {
                 for (i = 0; i < gTickSpeed; i++) {
                     if (D_8015011E) {
                         gCourseTimer += COURSE_TIMER_ITER;
@@ -618,7 +625,14 @@ void race_logic_loop(void) {
             sNumVBlanks = 0;
             profiler_log_thread5_time(LEVEL_SCRIPT_EXECUTE);
             D_8015F788 = 0;
+            net_lockstep_rng_save(); /* Path B: snapshot sim RNG before render */
+            /* Online lockstep local chase-cam: run MK64's real camera-follow for the
+             * local kart (all reactions correct for it), isolated from the sim by a
+             * save/restore of every camera global the follow mutates. No-op offline /
+             * for the host slot, so stock behavior is unchanged. */
+            net_lockstep_cam_push();
             render_player_one_1p_screen();
+            net_lockstep_cam_pop();
             if (!gEnableDebugMode) {
                 D_800DC514 = false;
             } else {
@@ -1168,6 +1182,76 @@ void update_gamestate(void) {
     }
 }
 
+/* ==========================================================================
+ * NetPak64 integration: initialize the device at boot and pump it once per
+ * frame in poll mode. The netcode layer (net_race.c) rides on top, replicating
+ * kart state during races. On a stock console / stock emulator the device is
+ * absent (netpak_present() false) and every hook is a cheap no-op, so the ROM
+ * still boots and plays normally. Trace device activity with ares NP64_LOG=1.
+ * ========================================================================== */
+struct NetpakDbg {
+    u8  present; /* netpak_init() succeeded */
+    u32 version; /* VERSION register */
+    u32 status;  /* last STATUS register */
+};
+struct NetpakDbg gNetpakDbg;
+
+static void netpak_boot(void) {
+    bzero(&gNetpakDbg, sizeof(gNetpakDbg));
+    net_race_reset();
+    if (netpak_init(false) != 0) {
+        osSyncPrintf("netpak: no device (stock console / NP64 disabled)\n");
+        return;
+    }
+    gNetpakDbg.present = true;
+    gNetpakDbg.version = netpak_version();
+    osSyncPrintf("netpak: device present, VERSION=%08x\n", gNetpakDbg.version);
+}
+
+/* Bypass the menus straight into a playable full-screen single-player Grand
+ * Prix on Mario Raceway, mirroring the game's own demo/attract setup (case 0)
+ * but with gDemoMode off so the local player has real control. Slots 1-7 spawn
+ * as CPUs; the netcode puppets whichever ones have a connected peer. This lets
+ * two ares instances pair up on launch instead of hand-driving menus in both. */
+UNUSED static void netpak_launch_race(void) {
+    gDemoMode = DEMO_MODE_INACTIVE;
+    gDemoUseController = 0;
+    gCCSelection = CC_100;
+    gIsMirrorMode = 0;    /* normally set by setup_selected_game_mode() */
+    gPlaceItemBoxes = 1;
+    gCurrentCourseId = COURSE_MARIO_RACEWAY;
+    gScreenModeSelection = SCREEN_MODE_1P;
+    gPlayerCountSelection1 = 1;
+    gPlayerCount = 1;
+    gCharacterSelections[0] = 0; /* Mario */
+    gModeSelection = GRAND_PRIX;
+    gCupSelection = gCupSelectionByCourseId[gCurrentCourseId];
+    D_800DC540 = gCupSelection;
+    gCourseIndexInCup = gPerCupIndexByCourseId[gCurrentCourseId];
+    gGamestateNext = RACING; /* handled at the top of this same loop iteration */
+    osSyncPrintf("netpak: auto-starting networked race\n");
+    /* NOTE: this direct launch reaches RACING and the netcode runs (snapshots
+     * flow, puppets shadow), but the local kart can't drive — the bypass skips
+     * the menu flow's hidden race init (staging clear, Lakitu-hand-off, CPU
+     * seeding). The real fix is the NETWORK VS menu going through the game's
+     * character-select -> course-select -> race path (see task). */
+}
+
+/* Pump the device once per frame, then let the netcode replicate. Must run
+ * before net_race_frame() so netpak_poll() has drained the device into the
+ * driver ring that net_race reads. */
+static void netpak_frame(void) {
+    if (!netpak_present()) {
+        return;
+    }
+    netpak_poll();
+    gNetpakDbg.status = netpak_status();
+    /* Auto-start bypass removed — the ONLINE menu now launches races through the
+     * game's real flow (see mk64-online-product-vision). netpak_launch_race()
+     * and net_race_autostart_check() are kept for reference but no longer fired. */
+    net_race_frame();
+}
+
 void thread5_game_loop(UNUSED void* arg) {
     osCreateMesgQueue(&gGfxVblankQueue, gGfxMesgBuf, 1);
     osCreateMesgQueue(&gGameVblankQueue, &gGameMesgBuf, 1);
@@ -1190,9 +1274,11 @@ void thread5_game_loop(UNUSED void* arg) {
     rendering_init();
     read_controllers();
     func_800C5CB8();
+    netpak_boot();
 
     while (true) {
         func_800CB2C4();
+        netpak_frame();
 
         // Update the gamestate if it has changed (racing, menus, credits, etc.).
         if (gGamestateNext != gGamestate) {
@@ -1202,6 +1288,8 @@ void thread5_game_loop(UNUSED void* arg) {
         profiler_log_thread5_time(THREAD5_START);
         config_gfx_pool();
         read_controllers();
+        net_race_autodrive(); // demo: drive the local kart so netplay is visible
+        net_lockstep_tick();  // online lockstep: exchange inputs + drive all karts (no-op offline)
         game_state_handler();
         end_master_display_list();
         display_and_vsync();

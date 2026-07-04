@@ -32,6 +32,7 @@
 #include "objects.h"
 #include "bomb_kart.h"
 #include "menus.h"
+#include "net_race.h" /* net_lockstep_local_slot — online HUD retarget */
 #include "data/other_textures.h"
 #include "spawn_players.h"
 #include "sounds.h"
@@ -954,10 +955,56 @@ void func_80058F48(void) {
     }
 }
 
+/* Online lockstep HUD retarget: the 1P HUD (lap / position / item) reads the
+ * "player one" slot 0, but each console owns a different slot. These push/pop the
+ * LOCAL slot's values into the slot-0 sources that the HUD draw functions read,
+ * keeping slot 0's on-screen POSITIONS. Scoped tightly around the local-player
+ * draws so the shared ranking board (global standings) is never touched, and only
+ * during render — restored immediately, so the sim never sees the swap. No-op when
+ * the local slot is 0 (offline / host / snapshot mode). */
+static s32 sNetHudSlot;     /* local slot in effect while swapped (0 = inactive) */
+static s32 sNetHudRank;     /* saved gGPCurrentRaceRankByPlayerId[0] (post-race place) */
+static s16 sNetHudRankLive; /* saved D_8018CF98[0] (DURING-race place display) */
+static s32 sNetHudItemObj;  /* saved gItemWindowObjectByPlayerId[0] */
+static s8  sNetHudAlsoLap;  /* saved playerHUD[0].alsoLapCount */
+static s8  sNetHudLap;      /* saved playerHUD[0].lapCount */
+
+static void net_hud_local_push(void) {
+    s32 ls = net_lockstep_local_slot();
+    sNetHudSlot = ls;
+    if (ls != 0) {
+        sNetHudRank = gGPCurrentRaceRankByPlayerId[PLAYER_ONE];
+        sNetHudRankLive = D_8018CF98[PLAYER_ONE];
+        sNetHudItemObj = gItemWindowObjectByPlayerId[PLAYER_ONE];
+        sNetHudAlsoLap = playerHUD[PLAYER_ONE].alsoLapCount;
+        sNetHudLap = playerHUD[PLAYER_ONE].lapCount;
+        gGPCurrentRaceRankByPlayerId[PLAYER_ONE] = gGPCurrentRaceRankByPlayerId[ls];
+        /* the in-race "Nth" draw (func_8004E800, lapCount != 3) reads D_8018CF98,
+         * not gGPCurrentRaceRankByPlayerId — swap both so the local player's place
+         * shows during the race as well as after the finish */
+        D_8018CF98[PLAYER_ONE] = D_8018CF98[ls];
+        gItemWindowObjectByPlayerId[PLAYER_ONE] = gItemWindowObjectByPlayerId[ls];
+        playerHUD[PLAYER_ONE].alsoLapCount = (s8) gLapCountByPlayerId[ls];
+        playerHUD[PLAYER_ONE].lapCount = (s8) gLapCountByPlayerId[ls];
+    }
+}
+
+static void net_hud_local_pop(void) {
+    if (sNetHudSlot != 0) {
+        gGPCurrentRaceRankByPlayerId[PLAYER_ONE] = sNetHudRank;
+        D_8018CF98[PLAYER_ONE] = sNetHudRankLive;
+        gItemWindowObjectByPlayerId[PLAYER_ONE] = sNetHudItemObj;
+        playerHUD[PLAYER_ONE].alsoLapCount = sNetHudAlsoLap;
+        playerHUD[PLAYER_ONE].lapCount = sNetHudLap;
+        sNetHudSlot = 0;
+    }
+}
+
 void func_80058F78(void) {
     if (gHUDDisable == 0) {
         set_matrix_hud_screen();
         if ((!gDemoMode) && (gIsHUDVisible != 0) && (D_801657D8 == 0)) {
+            net_hud_local_push();
             draw_item_window(PLAYER_ONE);
             if (D_801657E4 != 2) {
                 render_hud_timer(PLAYER_ONE);
@@ -967,6 +1014,7 @@ void func_80058F78(void) {
                     func_8004ED40(0);
                 }
             }
+            net_hud_local_pop();
         }
     }
 }
@@ -1000,6 +1048,7 @@ void func_8005902C(void) {
 void func_800590D4(void) {
     if (D_8018D2A4 != 0) {
         if (gModeSelection != BATTLE) {
+            net_hud_local_push(); /* online: draw the local player's position, not slot 0's */
             switch (gPlayerCountSelection1) {
                 case 1:
                     if (gModeSelection != TIME_TRIALS) {
@@ -1023,6 +1072,7 @@ void func_800590D4(void) {
                     func_8004E998(PLAYER_FOUR);
                     break;
             }
+            net_hud_local_pop();
         }
     }
 }

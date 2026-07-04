@@ -13,6 +13,7 @@
 #include "code_800029B0.h"
 #include "cpu_vehicles_camera_path.h"
 #include "menu_items.h"
+#include "net_menu.h"
 #include "code_800AF9B0.h"
 #include "save.h"
 #include "replays.h"
@@ -110,7 +111,7 @@ const s8 sScreenModePlayerTable[] = { SCREEN_MODE_1P, SCREEN_MODE_2P_SPLITSCREEN
 const s8 sScreenModePlayerCount[] = { 1, 2, 2, 3, 4 };
 
 // Set indexed slots numbers for one-two-three-four mode selection
-const s8 gPlayerModeSelection[] = { 1, 2, 1, 1 };
+const s8 gPlayerModeSelection[] = { 2, 2, 1, 1 }; // 1p bound 1->2 for the ONLINE option
 
 // Limit for each index column in one-two-three-four mode selection
 const s8 sGameModePlayerColumnDefault[][3] = {
@@ -131,7 +132,7 @@ const s8 sGameModePlayerColumnExtra[][3] = {
 
 // Modes to select in one-two-three-four mode selection
 const s32 gGameModePlayerSelection[][3] = {
-    { GRAND_PRIX, TIME_TRIALS, 0x00000000 }, // 1p game modes
+    { GRAND_PRIX, TIME_TRIALS, ONLINE }, // 1p game modes (ONLINE = NetPak64)
     { GRAND_PRIX, VERSUS, BATTLE },          // 2p game modes
     { VERSUS, BATTLE, 0x00000000 },          // 3p game modes
     { VERSUS, BATTLE, 0x00000000 },          // 4p game modes
@@ -165,6 +166,8 @@ const s8 sScreenModeIdxFromPlayerMode[4] = { 0, 1, 3, 4 };
 const union GameModePack sSoundMenuPack = { { SOUND_STEREO, SOUND_HEADPHONES, SOUND_UNUSED, SOUND_MONO } };
 
 /**************************/
+
+void network_vs_menu_act(struct Controller* controller, u16 controllerIdx); // NetPak64
 
 /**
  * General menu main handler
@@ -231,6 +234,11 @@ void update_menus(void) {
                 case COURSE_SELECT_MENU_FROM_QUIT:
                 case COURSE_SELECT_MENU:
                     course_select_menu_act(&gControllers[controllerIdx], controllerIdx);
+                    break;
+                case NETWORK_VS_MENU: // NetPak64 online screen
+                    if (controllerIdx == PLAYER_ONE) {
+                        network_vs_menu_act(&gControllers[controllerIdx], controllerIdx);
+                    }
                     break;
             }
         }
@@ -1376,6 +1384,10 @@ void main_menu_act(struct Controller* controller, u16 controllerIdx) {
                             gMainMenuSelection = MAIN_MENU_OK_SELECT;
                             play_sound2(SOUND_MENU_BATTLE);
                             break;
+                        case ONLINE: // NetPak64: go straight to the online screen
+                            func_online_fade();
+                            play_sound2(SOUND_MENU_VERSUS);
+                            break;
                     }
                     reset_cycle_flash_menu();
                     gMenuTimingCounter = 0;
@@ -1687,6 +1699,46 @@ void course_select_menu_act(struct Controller* arg0, u16 controllerIdx) {
         btnAndStick |= A_BUTTON;
     }
 
+    /* Online race: the host already picked the track in the lobby and broadcast
+     * it to the room. Rather than a bespoke launch (which skips the course/grid
+     * setup that happens while dwelling in COURSE->OK and spawns karts off-track),
+     * pre-lock the host's course and auto-drive the REAL sub-state flow exactly
+     * as a human would — A steps CUP->COURSE->OK->launch, with dwell for loads. */
+    if (net_menu_online_pending() && !is_screen_being_faded()) {
+        static s32 sOnlinePhase;
+        static s32 sOnlineLocked;
+        s32 hostCourse = net_menu_online_course();
+        if (!sOnlineLocked) {
+            /* Race as "cup race 1" (index 0) so the GP path picks CPU characters
+             * and lays out the grid; the actual track is forced below. */
+            gCupSelection = gCupSelectionByCourseId[hostCourse];
+            D_800DC540 = gCupSelection;
+            gCourseIndexInCup = 0;
+            gCurrentCourseId = (s16) hostCourse;
+            sOnlinePhase = 0;
+            sOnlineLocked = 1;
+        }
+        sOnlinePhase++;
+        if (gSubMenuSelection != SUB_MENU_MAP_SELECT_OK) {
+            /* Auto-navigate to the OK (map preview) sub-state — the human never
+             * picks the track. One confirm per ~20 frames gives loads time. */
+            if ((sOnlinePhase % 20) == 0) {
+                btnAndStick |= A_BUTTON;
+            }
+        } else {
+            /* At the map screen: GP's CUP->OK forced the cup's first course, so
+             * re-assert the host's track. Then HOLD here running the start
+             * barrier ("waiting for all players") and only fire the launch once
+             * the whole room is ready — so every player starts together. */
+            gCurrentCourseId = (s16) hostCourse;
+            if (net_online_barrier_ready()) {
+                btnAndStick |= A_BUTTON; /* OK-state launch */
+                net_menu_online_clear();
+                sOnlineLocked = 0;
+            }
+        }
+    }
+
     if (!is_screen_being_faded()) {
         switch (gSubMenuSelection) {
             case SUB_MENU_MAP_SELECT_CUP:
@@ -1785,6 +1837,13 @@ void course_select_menu_act(struct Controller* arg0, u16 controllerIdx) {
                 break;
         }
     }
+}
+
+/**
+ * NetPak64 online screen (host/join/lobby). Delegates to net_menu.c.
+ */
+void network_vs_menu_act(struct Controller* controller, UNUSED u16 controllerIdx) {
+    net_menu_update(controller);
 }
 
 /**
@@ -1898,6 +1957,7 @@ void load_menu_states(s32 menuSelection) {
         case 2:
         case CHARACTER_SELECT_MENU: {
             switch (gMenuFadeType) {
+                case MENU_FADE_TYPE_ONLINE_START: /* NetPak64: init char select like a normal entry */
                 case MENU_FADE_TYPE_MAIN: {
                     gPlayerSelectMenuSelection = PLAYER_SELECT_MENU_MAIN;
                     if (gGamestate == 0) {
