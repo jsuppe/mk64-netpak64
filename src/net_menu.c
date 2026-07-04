@@ -131,6 +131,10 @@ static bool sBarrierReady[8];     /* host: which of those have reported ready */
 static s32  sBarrierN;            /* host: number of peers to wait for */
 static u32  sBarrierTick;         /* rebroadcast pacing */
 static bool sBarrierWaiting;      /* true while holding at the barrier (drives popup) */
+static u32  sBarrierWaitTicks;    /* frames spent waiting at the barrier (timeout) */
+static u32  sHostGonePolls;       /* lobby: consecutive roster polls with the host absent */
+#define BARRIER_TIMEOUT_TICKS 1800 /* ~30 s: fail FORWARD (launch; in-race drop                                     * arbitration turns absentees into bots) */
+#define LOBBY_HOST_GONE_POLLS 6    /* ~3 s of roster polls: fall BACK to the menu                                     * (no course chosen yet, nothing to launch) */
 
 /* Configure a full-screen 1-local-player VERSUS race (opponents = network
  * puppets in the CPU slots) and drop into the game's real character select. */
@@ -217,12 +221,14 @@ static void net_online_barrier_arm_host(void) {
     }
     sBarrierTick = 0;
     sBarrierWaiting = false;
+    sBarrierWaitTicks = 0;
 }
 static void net_online_barrier_arm_joiner(u8 hostNode) {
     sIsHost = false;
     sHostNode = hostNode;
     sBarrierTick = 0;
     sBarrierWaiting = false;
+    sBarrierWaitTicks = 0;
 }
 
 /* Called every frame while a player holds at the map screen after picking a
@@ -251,6 +257,50 @@ bool net_online_barrier_ready(void) {
     }
 
     sBarrierWaiting = true;
+
+    /* Peer/host loss at the barrier: fail FORWARD. A departed player must not
+     * freeze the start popup forever — the in-race drop arbitration (proven for
+     * both players and the host) turns absentees into CPU bots once racing. */
+    sBarrierWaitTicks++;
+    if ((sBarrierWaitTicks % 30) == 0) { /* re-check the room roster ~2x/sec */
+        netpak_peer_t roster[8];
+        s32 nr = netpak_peers(roster, 8);
+        if (nr >= 0) {
+            if (sIsHost) {
+                /* any barrier peer no longer in the room counts as ready */
+                for (i = 0; i < sBarrierN; i++) {
+                    s32 j;
+                    bool present = false;
+                    for (j = 0; j < nr; j++) {
+                        if (roster[j].node_id == sBarrierPeer[i]) {
+                            present = true;
+                        }
+                    }
+                    if (!present && !sBarrierReady[i]) {
+                        sBarrierReady[i] = true;
+                        netpak_debug_poke(0xF3000000u | sBarrierPeer[i]); /* peer left at barrier */
+                    }
+                }
+            } else {
+                bool hostPresent = false;
+                for (i = 0; i < nr; i++) {
+                    if (roster[i].node_id == sHostNode) {
+                        hostPresent = true;
+                    }
+                }
+                if (!hostPresent) {
+                    netpak_debug_poke(0xF2000000u | sHostNode); /* host left at barrier */
+                    sBarrierWaiting = false;
+                    return true; /* launch; the host becomes a bot in-race */
+                }
+            }
+        }
+    }
+    if (sBarrierWaitTicks > BARRIER_TIMEOUT_TICKS) {
+        netpak_debug_poke(0xF2000000u | 0xFFu); /* barrier timeout */
+        sBarrierWaiting = false;
+        return true; /* launch with whoever is coming; drops handle the rest */
+    }
 
     if (sIsHost) {
         bool all = true;
@@ -447,6 +497,32 @@ void net_menu_update(struct Controller* controller) {
                 n = netpak_peers(sPeers, 8);
                 if (n >= 0) {
                     sPeerCount = n;
+                    /* Host-loss in the lobby (before START): the room creator is
+                     * node 0. No course has been chosen yet, so there is nothing
+                     * to launch — fall BACK to the online menu. */
+                    if (sNodeId != 0) {
+                        bool hostPresent = false;
+                        s32 hi;
+                        for (hi = 0; hi < n; hi++) {
+                            if (sPeers[hi].node_id == 0) {
+                                hostPresent = true;
+                            }
+                        }
+                        if (!hostPresent) {
+                            sHostGonePolls++;
+                        } else {
+                            sHostGonePolls = 0;
+                        }
+                        if (sHostGonePolls >= LOBBY_HOST_GONE_POLLS) {
+                            netpak_debug_poke(0xF1000000u); /* host left the lobby */
+                            sHostGonePolls = 0;
+                            netpak_session_leave();
+                            sPeerCount = 0;
+                            sState = OM_MAIN;
+                            play_sound2(SOUND_MENU_GO_BACK);
+                            break;
+                        }
+                    }
                 }
             }
             /* Wait for the host's START: drain ch1 for a lobby control message. */
