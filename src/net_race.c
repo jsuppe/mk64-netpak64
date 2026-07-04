@@ -1033,6 +1033,45 @@ void net_lockstep_tick(void) {
         }
     }
 
+    /* DROP echo: every console that applied a drop rebroadcasts it periodically
+     * while its ring still holds the leaver's final inputs, so a console that
+     * missed the arbiter's original (unreliable) DROP still converges instead of
+     * stalling forever as a non-arbiter. Receivers dedupe via sLsDropped. */
+    {
+        static u32 echoTick;
+        echoTick++;
+        if ((echoTick % 32) == 0) {
+            for (i = 0; i < np; i++) {
+                u32 L2 = sLsDropLast[i];
+                if (sLsDropped[i] && f >= LS_DELAY && (f - LS_DELAY) - L2 < 48u) {
+                    LsDropMsg dm2;
+                    s32 k, n3 = 0;
+                    dm2.tag = LSDROP_TAG;
+                    dm2.player = (u8) i;
+                    dm2.pad = 0;
+                    dm2.pad2 = 0;
+                    dm2.lastFrame = (u16) L2;
+                    for (k = LS_REDUN - 1; k >= 0; k--) {
+                        u32 fr = L2 - (u32) (LS_REDUN - 1 - k);
+                        LsInput* s = &sLsInput[i][fr % LS_RING];
+                        if (fr <= L2 && s->have && s->frame == fr) {
+                            dm2.in[k].button = s->button;
+                            dm2.in[k].stickX = s->stickX;
+                            dm2.in[k].stickY = s->stickY;
+                            n3++;
+                        } else {
+                            dm2.in[k].button = 0;
+                            dm2.in[k].stickX = 0;
+                            dm2.in[k].stickY = 0;
+                        }
+                    }
+                    dm2.count = (u8) n3;
+                    netpak_send(NETPAK_BROADCAST, 0, &dm2, sizeof(dm2));
+                }
+            }
+        }
+    }
+
     /* STALL GATE. Simulate logical frame df only when EVERY player's input for it
      * has arrived; otherwise freeze (race_logic_loop skips the sim while
      * net_lockstep_stalled()) rather than applying a mismatched/stale input, which
@@ -1044,8 +1083,10 @@ void net_lockstep_tick(void) {
     {
         bool ready = true;
         s32 missing = -1;
+        bool missMask[NET_MAX_SLOTS];
         for (i = 0; i < np; i++) {
             LsInput* s = &sLsInput[i][df % LS_RING];
+            missMask[i] = false;
             if (sLsDropped[i] && df > sLsDropLast[i]) {
                 continue; /* dropped player: no input needed past their last frame L */
             }
@@ -1053,8 +1094,10 @@ void net_lockstep_tick(void) {
              * the ring wraps (input from df±64k would silently pass) */
             if (!s->have || s->frame != df) {
                 ready = false;
-                missing = i;
-                break;
+                missMask[i] = true;
+                if (missing < 0) {
+                    missing = i;
+                }
             }
         }
 
@@ -1084,27 +1127,34 @@ void net_lockstep_tick(void) {
              * holds — otherwise the arbiter can pick an L below what faster
              * consoles already SIMULATED with real inputs, splitting the sim at
              * the boundary (observed: arbiter one kart-frame ahead from L+1). */
-            if (missing >= 0 && !sLsDropped[missing] && sLsStallTicks >= 30 && (sLsStallTicks % 8) == 0) {
-                LsPacket rp2;
-                s32 n2 = 0;
-                u32 H = df; /* find my highest consecutive frame of X (H-1 = horizon) */
-                u32 base2;
-                while (H > 0) {
-                    LsInput* s = &sLsInput[missing][(H - 1) % LS_RING];
-                    if (s->have && s->frame == H - 1) {
-                        break;
+            if (sLsStallTicks >= 30 && (sLsStallTicks % 8) == 0) {
+                s32 mj;
+                for (mj = 0; mj < np; mj++) {
+                    LsPacket rp2;
+                    s32 n2 = 0;
+                    u32 H, base2;
+                    if (!missMask[mj] || sLsDropped[mj]) {
+                        continue;
                     }
-                    H--;
-                }
-                if (H > 0) {
+                    H = df; /* find my highest consecutive frame of mj (H-1 = horizon) */
+                    while (H > 0) {
+                        LsInput* s = &sLsInput[mj][(H - 1) % LS_RING];
+                        if (s->have && s->frame == H - 1) {
+                            break;
+                        }
+                        H--;
+                    }
+                    if (H == 0) {
+                        continue;
+                    }
                     base2 = (H >= LS_REDUN) ? (H - LS_REDUN) : 0;
                     rp2.tag = LS_TAG;
-                    rp2.player = (u8) missing; /* relayed in X's name */
+                    rp2.player = (u8) mj; /* relayed in the missing player's name */
                     rp2.pad = 0;
                     rp2.baseFrame = (u16) base2;
                     rp2.pad2 = 0;
                     for (i = 0; (u32) i < H - base2 && i < LS_REDUN; i++) {
-                        LsInput* s = &sLsInput[missing][(base2 + (u32) i) % LS_RING];
+                        LsInput* s = &sLsInput[mj][(base2 + (u32) i) % LS_RING];
                         if (s->have && s->frame == base2 + (u32) i) {
                             rp2.in[i].button = s->button;
                             rp2.in[i].stickX = s->stickX;
