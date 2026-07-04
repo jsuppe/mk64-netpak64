@@ -38,6 +38,12 @@ extern Gfx* gDisplayListHead;    /* main.h — for the barrier popup's fill box 
 static const char kCodeAlphabet[] = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 #define CODE_LEN 6
 
+/* Player-name alphabet: leading space = "blank" slot (trimmed on save), then
+ * the full font set that reads well at roster size. Names are what the other
+ * players see in the lobby (relay identity, netpak_set_name). */
+static const char kNameAlphabet[] = " ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-";
+#define NAME_LEN 8
+
 /* The 16 selectable race courses, in the stock cup order (Mushroom / Flower /
  * Star / Special). The host cycles this list in the lobby; the chosen course id
  * is locked and broadcast to every peer so the whole room loads the same track.
@@ -81,16 +87,22 @@ typedef struct {
 } OnlineMsg; /* 4 bytes */
 
 enum OnlineMenuState {
-    OM_MAIN,       /* HOST GAME / JOIN GAME */
+    OM_MAIN,       /* HOST GAME / JOIN GAME / NAME */
     OM_HOSTING,    /* created a room; showing code, waiting for players */
     OM_JOIN_ENTRY, /* dialing in a code */
-    OM_JOINED      /* joined a room; waiting for the host to start */
+    OM_JOINED,     /* joined a room; waiting for the host to start */
+    OM_NAME_ENTRY  /* editing the player name */
 };
+#define OM_MAIN_OPTIONS 3 /* HOST / JOIN / NAME */
 
 static s32  sState;
-static s32  sSel;             /* OM_MAIN cursor: 0 = HOST, 1 = JOIN */
+static s32  sSel;             /* OM_MAIN cursor: 0 = HOST, 1 = JOIN, 2 = NAME */
 static char sCode[8];         /* room code (create result or join entry) */
 static s32  sEntryPos;        /* OM_JOIN_ENTRY cursor 0..CODE_LEN-1 */
+static char sName[NAME_LEN + 1]; /* player name, space-padded while editing */
+static s32  sNamePos;         /* OM_NAME_ENTRY cursor 0..NAME_LEN-1 */
+
+static void name_load(void);
 static s32  sNodeId;          /* our node id after create/join */
 static s32  sLastErr;         /* last session errno (0 = ok) for display */
 
@@ -373,6 +385,8 @@ void net_menu_reset(void) {
         sCode[i] = kCodeAlphabet[0];
     }
     sCode[CODE_LEN] = '\0';
+    sNamePos = 0;
+    name_load();
 
     /* Pre-fill from the launch room code (ares NP64_ROOM), if any. */
     {
@@ -405,6 +419,63 @@ static void code_cycle(s32 pos, s32 delta) {
     sCode[pos] = kCodeAlphabet[i];
 }
 
+/* index of char c in the name alphabet, or 0 (blank) if not found */
+static s32 name_index(char c) {
+    s32 i;
+    for (i = 0; i < (s32)(sizeof(kNameAlphabet) - 1); i++) {
+        if (kNameAlphabet[i] == c) {
+            return i;
+        }
+    }
+    return 0;
+}
+
+static void name_cycle(s32 pos, s32 delta) {
+    s32 n = (s32)(sizeof(kNameAlphabet) - 1);
+    s32 i = (name_index(sName[pos]) + delta + n) % n;
+    sName[pos] = kNameAlphabet[i];
+}
+
+/* Pull the current name from the device into the edit buffer, normalized to
+ * the editable alphabet (lowercase folded to uppercase, anything else blank)
+ * and space-padded to NAME_LEN. */
+static void name_load(void) {
+    char raw[16];
+    s32 i;
+    netpak_get_name(raw);
+    for (i = 0; i < NAME_LEN; i++) {
+        char c = raw[i];
+        if (c >= 'a' && c <= 'z') {
+            c = (char) (c - 'a' + 'A');
+        }
+        if (c == '\0' || name_index(c) == 0) {
+            c = ' ';
+        }
+        sName[i] = c;
+    }
+    sName[NAME_LEN] = '\0';
+}
+
+/* Commit the edit buffer: trim the space padding and push the name to the
+ * device (relay + room see it immediately; the emulator persists it).
+ * Returns false for an all-blank name (nothing sent). */
+static bool name_save(void) {
+    char out[16];
+    s32 i;
+    s32 end = NAME_LEN;
+    while (end > 0 && sName[end - 1] == ' ') {
+        end--;
+    }
+    if (end == 0) {
+        return false;
+    }
+    for (i = 0; i < end; i++) {
+        out[i] = sName[i];
+    }
+    out[end] = '\0';
+    return netpak_set_name(out) == 0;
+}
+
 void net_menu_update(struct Controller* controller) {
     u16 btn = controller->buttonPressed | controller->stickPressed;
 
@@ -414,15 +485,24 @@ void net_menu_update(struct Controller* controller) {
 
     switch (sState) {
         case OM_MAIN:
-            if (btn & (U_JPAD | D_JPAD)) {
-                sSel ^= 1;
+            if (btn & U_JPAD) {
+                sSel = (sSel + OM_MAIN_OPTIONS - 1) % OM_MAIN_OPTIONS;
+                play_sound2(SOUND_MENU_CURSOR_MOVE);
+            }
+            if (btn & D_JPAD) {
+                sSel = (sSel + 1) % OM_MAIN_OPTIONS;
                 play_sound2(SOUND_MENU_CURSOR_MOVE);
             }
             if (btn & B_BUTTON) {
                 func_online_fade(); /* leave the online screen -> main menu */
                 play_sound2(SOUND_MENU_GO_BACK);
             } else if (btn & A_BUTTON) {
-                if (sSel == 0) { /* HOST: open a room (needs the relay up) */
+                if (sSel == 2) { /* NAME: edit the player name */
+                    sNamePos = 0;
+                    name_load();
+                    sState = OM_NAME_ENTRY;
+                    play_sound2(SOUND_MENU_SELECT);
+                } else if (sSel == 0) { /* HOST: open a room (needs the relay up) */
                     if (netpak_present() && (netpak_status() & NETPAK_STATUS_LINK_UP)) {
                         sLastErr = 0;
                         /* With a launch code, join-or-create that exact room so
@@ -602,6 +682,42 @@ void net_menu_update(struct Controller* controller) {
                 }
             }
             break;
+
+        case OM_NAME_ENTRY:
+            if (btn & U_JPAD) {
+                name_cycle(sNamePos, +1);
+                play_sound2(SOUND_MENU_CURSOR_MOVE);
+            }
+            if (btn & D_JPAD) {
+                name_cycle(sNamePos, -1);
+                play_sound2(SOUND_MENU_CURSOR_MOVE);
+            }
+            if (btn & R_JPAD) {
+                if (sNamePos < NAME_LEN - 1) {
+                    sNamePos++;
+                    play_sound2(SOUND_MENU_CURSOR_MOVE);
+                }
+            }
+            if (btn & L_JPAD) {
+                if (sNamePos > 0) {
+                    sNamePos--;
+                    play_sound2(SOUND_MENU_CURSOR_MOVE);
+                }
+            }
+            if (btn & B_BUTTON) { /* cancel: discard edits */
+                name_load();
+                sState = OM_MAIN;
+                play_sound2(SOUND_MENU_GO_BACK);
+            } else if (btn & A_BUTTON) { /* confirm -> SET_IDENTITY */
+                if (name_save()) {
+                    name_load(); /* re-read: the device copy is the truth */
+                    sState = OM_MAIN;
+                    play_sound2(SOUND_MENU_OK_CLICKED);
+                } else {
+                    play_sound2(SOUND_MENU_GO_BACK); /* all blank / cmd failed */
+                }
+            }
+            break;
     }
 }
 
@@ -624,16 +740,40 @@ void net_menu_render(void) {
     }
 
     switch (sState) {
-        case OM_MAIN:
-            draw_option(0xA0, 0x70, "HOST GAME", sSel == 0);
-            draw_option(0xA0, 0x88, "JOIN GAME", sSel == 1);
+        case OM_MAIN: {
+            char nameRow[24];
+            s32 i;
+            s32 n = 0;
+            const char* label = "NAME  ";
+            while (label[n] != '\0') {
+                nameRow[n] = label[n];
+                n++;
+            }
+            {
+                s32 end = NAME_LEN;
+                while (end > 0 && sName[end - 1] == ' ') {
+                    end--;
+                }
+                for (i = 0; i < end; i++) {
+                    nameRow[n++] = sName[i];
+                }
+                if (end == 0) { /* nothing set yet: show a placeholder */
+                    nameRow[n++] = '-';
+                }
+            }
+            nameRow[n] = '\0';
+
+            draw_option(0xA0, 0x68, "HOST GAME", sSel == 0);
+            draw_option(0xA0, 0x80, "JOIN GAME", sSel == 1);
+            draw_option(0xA0, 0x98, nameRow, sSel == 2);
             if (sLastErr) {
                 set_text_color(TEXT_RED);
-                print_text1_center_mode_1(0xA0, 0xA8, "CONNECTION FAILED", 0, 0.7f, 0.7f);
+                print_text1_center_mode_1(0xA0, 0xB0, "CONNECTION FAILED", 0, 0.7f, 0.7f);
             }
             set_text_color(TEXT_YELLOW);
             print_text1_center_mode_1(0xA0, 0xC4, "B  BACK", 0, 0.7f, 0.7f);
             break;
+        }
 
         case OM_HOSTING:
         case OM_JOINED: {
@@ -647,7 +787,18 @@ void net_menu_render(void) {
             set_text_color(TEXT_GREEN);
             print_text1_center_mode_1(0xA0, 0x78, "PLAYERS", 0, 0.7f, 0.7f);
             set_text_color(TEXT_YELLOW);
-            print_text1_center_mode_1(0xA0, 0x88, "YOU", 0, 0.7f, 0.7f); /* self */
+            { /* self: show the actual player name (falls back to YOU) */
+                char self[NAME_LEN + 1];
+                s32 end = NAME_LEN;
+                while (end > 0 && sName[end - 1] == ' ') {
+                    end--;
+                }
+                for (i = 0; i < end; i++) {
+                    self[i] = sName[i];
+                }
+                self[end] = '\0';
+                print_text1_center_mode_1(0xA0, 0x88, end ? self : "YOU", 0, 0.7f, 0.7f);
+            }
             y = 0x94;
             for (i = 0; i < sPeerCount && i < 5; i++) {
                 print_text1_center_mode_1(0xA0, y, sPeers[i].name, 0, 0.7f, 0.7f);
@@ -684,6 +835,27 @@ void net_menu_render(void) {
             set_text_color(TEXT_YELLOW);
             print_text1_center_mode_1(0xA0, 0xAC, "STICK  SET   A  JOIN", 0, 0.6f, 0.6f);
             print_text1_center_mode_1(0xA0, 0xC4, "B  BACK", 0, 0.7f, 0.7f);
+            break;
+        }
+
+        case OM_NAME_ENTRY: {
+            s32 i;
+            char ch[2];
+            ch[1] = '\0';
+            set_text_color(TEXT_GREEN);
+            print_text1_center_mode_1(0xA0, 0x64, "ENTER NAME", 0, 0.8f, 0.8f);
+            for (i = 0; i < NAME_LEN; i++) {
+                /* blank slots draw as a dot so the cursor has somewhere to be */
+                ch[0] = (sName[i] == ' ') ? '.' : sName[i];
+                set_text_color(i == sNamePos ? TEXT_BLUE_GREEN_RED_CYCLE_1
+                               : (sName[i] == ' ') ? TEXT_RED
+                                                   : TEXT_YELLOW);
+                /* NAME_LEN chars centered at x=0xA0, 0x14 px pitch */
+                print_text_mode_1(0x50 + i * 0x14, 0x82, ch, 0, 1.2f, 1.2f);
+            }
+            set_text_color(TEXT_YELLOW);
+            print_text1_center_mode_1(0xA0, 0xAC, "STICK  SET   A  OK", 0, 0.6f, 0.6f);
+            print_text1_center_mode_1(0xA0, 0xC4, "B  CANCEL", 0, 0.7f, 0.7f);
             break;
         }
     }

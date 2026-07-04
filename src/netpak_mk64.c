@@ -435,6 +435,25 @@ void netpak_get_room_code(char out[8]) {
     out[7] = '\0';
 }
 
+/* Read the current player name exposed at 0x006C-0x0078 (16 bytes big-endian,
+ * NUL-padded): the last SET_IDENTITY, else the launch identity (NP64_NAME or
+ * the emulator-persisted name). */
+void netpak_get_name(char out[16]) {
+    s32 w;
+    if (!np_present) {
+        out[0] = '\0';
+        return;
+    }
+    for (w = 0; w < 16; w += 4) {
+        u32 v = np_read(0x006C + (u32) w);
+        out[w + 0] = (char) ((v >> 24) & 0xFF);
+        out[w + 1] = (char) ((v >> 16) & 0xFF);
+        out[w + 2] = (char) ((v >> 8) & 0xFF);
+        out[w + 3] = (char) (v & 0xFF);
+    }
+    out[15] = '\0';
+}
+
 /* Direct write to ares' IS-Viewer at the cartridge domain (phys 0x13FF0000),
  * bypassing libultra's osEPiWriteIo (whose osRomBase mangling keeps the stock
  * osSyncPrintf from ever reaching ares). Matches ares' flush protocol: bytes to
@@ -691,6 +710,20 @@ s32 netpak_session_join(const char *code) {
 
 s32 netpak_session_leave(void) {
     return np_cmd(0x04);
+}
+
+s32 netpak_set_name(const char *name) {
+    u8 buf[16];
+    s32 i;
+    bzero(buf, sizeof(buf));
+    for (i = 0; i < 15 && name[i]; i++) {
+        buf[i] = (u8) name[i];
+    }
+    for (i = 0; i < 16; i += 4) {
+        np_write(NP_REG_CMD_DATA + (u32) i, ((u32) buf[i] << 24) | ((u32) buf[i + 1] << 16) |
+                                                ((u32) buf[i + 2] << 8) | buf[i + 3]);
+    }
+    return np_cmd(0x01); /* SET_IDENTITY (completes locally; relay notified async) */
 }
 
 s32 netpak_peers(netpak_peer_t *out, s32 max) {

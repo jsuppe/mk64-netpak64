@@ -111,13 +111,36 @@ static void net_race_menu_test(void) {
             press = A_BUTTON;                     /* GP: cup -> OK -> launch */
 #endif
             break;
-        case NETWORK_VS_MENU: { /* TEMP repro: JOIN shared room "AAAAAA", then START */
+        case NETWORK_VS_MENU: { /* join the preset room, then START. Instances still
+                                 * carrying the default identity ("player") first walk
+                                 * the NAME editor — exercises rename end-to-end without
+                                 * touching harness/bot instances named via NP64_NAME. */
             static s32 onlineStep;
+            static s32 doRename = -1;
+            if (doRename < 0) {
+                char nm[16];
+                netpak_get_name(nm);
+                doRename = (nm[0] == 'p' && nm[1] == 'l' && nm[2] == 'a' && nm[3] == 'y' &&
+                            nm[4] == 'e' && nm[5] == 'r' && nm[6] == '\0');
+            }
             netpak_debug_poke(0xF0000000u | (u32)(onlineStep & 0xFF));
-            switch (onlineStep) {
-                case 1: press = D_JPAD;       break; /* cursor HOST -> JOIN */
-                case 2: press = A_BUTTON;     break; /* JOIN: preset code -> join directly (OM_JOINED) */
-                case 7: press = START_BUTTON; break; /* self-start -> character select */
+            if (doRename) {
+                switch (onlineStep) {
+                    case 1: press = D_JPAD;        break; /* cursor HOST -> JOIN */
+                    case 2: press = D_JPAD;        break; /* JOIN -> NAME */
+                    case 3: press = A_BUTTON;      break; /* open the name editor */
+                    case 4: press = U_JPAD;        break; /* PLAYER -> QLAYER */
+                    case 5: press = A_BUTTON;      break; /* save -> SET_IDENTITY */
+                    case 6: press = U_JPAD;        break; /* cursor NAME -> JOIN */
+                    case 7: press = A_BUTTON;      break; /* JOIN: preset code -> OM_JOINED */
+                    case 12: press = START_BUTTON; break; /* self-start -> character select */
+                }
+            } else {
+                switch (onlineStep) {
+                    case 1: press = D_JPAD;        break; /* cursor HOST -> JOIN */
+                    case 2: press = A_BUTTON;      break; /* JOIN: preset code -> join directly */
+                    case 7: press = START_BUTTON;  break; /* self-start -> character select */
+                }
             }
             onlineStep++;
             break;

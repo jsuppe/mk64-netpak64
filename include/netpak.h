@@ -57,6 +57,17 @@ void netpak_isv_print(const char *s);
  *  out[0]=='\0' if none was provided. Used to pre-fill the online join code. */
 void netpak_get_room_code(char out[8]);
 
+/** Read the current player name into out[16], NUL-terminated (device register
+ *  window 0x006C; reflects the last SET_IDENTITY, else the launch identity).
+ *  out[0]=='\0' with no device. */
+void netpak_get_name(char out[16]);
+
+/** Set the player name used online (<=15 chars, NUL-terminated or shorter).
+ *  Takes effect immediately: the device forwards it to the relay, current
+ *  room members see the rename, and the emulator persists it across runs.
+ *  Returns 0 on success, negative errno otherwise. */
+s32 netpak_set_name(const char *name);
+
 /**
  * Initialize the device: program the spec-pinned Dom2 bus timings (§2.1),
  * clear device IRQ state, and select the receive path.
