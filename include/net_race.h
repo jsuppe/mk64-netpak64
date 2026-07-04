@@ -59,6 +59,10 @@ s32 net_lockstep_local_slot(void);
 void net_lockstep_cam_push(void);
 void net_lockstep_cam_pop(void);
 
+/* Zero the CPU-AI residue block BEFORE course load (start-state agreement that
+ * keeps the real CPU karts functional). Call from the online race launch. */
+void net_lockstep_prerace_clear(void);
+
 /* Stall gate: true when the lockstep tick could not assemble every player's input
  * for the frame about to be simulated, so the sim must be held this render-frame
  * (both consoles freeze in sync rather than desyncing on a mismatched input).

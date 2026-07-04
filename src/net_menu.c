@@ -138,7 +138,10 @@ static u32  sHostGonePolls;       /* lobby: consecutive roster polls with the ho
 
 /* Configure a full-screen 1-local-player VERSUS race (opponents = network
  * puppets in the CPU slots) and drop into the game's real character select. */
+extern void net_lockstep_prerace_clear(void); /* net_race.c — start-state agreement */
+
 static void net_menu_start_race(void) {
+    net_lockstep_prerace_clear(); /* zero CPU-AI residue BEFORE the course loads */
     /* Engine substrate = GRAND_PRIX 1-player: it spawns the full 8-kart grid
      * (1 human in slot 0 + 7 CPU in slots 1-7), and the netcode overrides those
      * CPU slots with remote puppets. 1-player VERSUS has NO spawn path in the

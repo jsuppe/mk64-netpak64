@@ -188,6 +188,7 @@ UNUSED s32 D_800DC558 = 0;
 // Framebuffer rendering values (max 3)
 u16 sRenderedFramebuffer = 0;
 u16 sRenderingFramebuffer = 0;
+u16 sNetHoldFrame = 0; /* lockstep stall: re-present the last frame (no rotation) */
 UNUSED u16 D_800DC564 = 0;
 s32 D_800DC568 = 0;
 s32 D_800DC56C[8] = { 0 };
@@ -470,11 +471,18 @@ void display_and_vsync(void) {
     osRecvMesg(&gGameVblankQueue, &gMainReceivedMesg, OS_MESG_BLOCK);
     crash_screen_set_framebuffer(gPhysicalFramebuffers[sRenderedFramebuffer]);
 
-    if (++sRenderedFramebuffer == 3) {
-        sRenderedFramebuffer = 0;
-    }
-    if (++sRenderingFramebuffer == 3) {
-        sRenderingFramebuffer = 0;
+    /* Lockstep stall: nothing was drawn this frame — keep showing the LAST
+     * rendered frame instead of rotating to a stale/never-drawn buffer (that
+     * rotation was the source of the black-frame flicker during stalls). */
+    if (sNetHoldFrame) {
+        sNetHoldFrame = 0;
+    } else {
+        if (++sRenderedFramebuffer == 3) {
+            sRenderedFramebuffer = 0;
+        }
+        if (++sRenderingFramebuffer == 3) {
+            sRenderingFramebuffer = 0;
+        }
     }
     gGlobalTimer++;
 }
@@ -600,6 +608,7 @@ void race_logic_loop(void) {
         select_framebuffer();
         gDPFullSync(gDisplayListHead++);
         gSPEndDisplayList(gDisplayListHead++);
+        sNetHoldFrame = 1; /* re-present the last frame; don't rotate buffers */
         return;
     }
 

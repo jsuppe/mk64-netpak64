@@ -765,6 +765,28 @@ static bool    sLsRngActive; /* true while an online lockstep race is running */
 static bool    sLsStall;     /* stall gate: true when a needed input is missing this frame */
 static u32     sLsStallCount; /* diagnostic: total stalled render-frames this race */
 
+/* ---- Race-entry CPU-block sync (start-state agreement v2) -----------------
+ * Zeroing the block at race entry lobotomized the REAL CPU karts (slots np..7
+ * when np < 8): course-load initializes tables inside the block, and the zero
+ * ran after. Zeroing pre-load kept CPUs alive but menu frames between launch
+ * and load re-accumulated per-console residue (diverged ~333). v2: the HOST
+ * broadcasts ITS block at race entry over reliable ch1; joiners hold the gate
+ * until applied. Init values arrive valid, residue becomes SHARED (harmless —
+ * agreement is all determinism needs). */
+#define LSBLK_TAG   0x42 /* 'B' */
+#define LSBLK_CHUNK 900
+typedef struct {
+    u8  tag;
+    u8  seq;
+    u16 offset;
+    u16 len;
+    u16 total;
+    u8  data[LSBLK_CHUNK];
+} LsBlkMsg;
+static bool sBlkApplied;
+static u32  sBlkGot;
+static u32  sBlkSendPos;
+
 /* ---- Player-drop handling -------------------------------------------------
  * A leaver would otherwise stall everyone forever (the gate needs ALL inputs).
  * Per-console timeouts would desync (different drop frames), so the drop is an
@@ -843,25 +865,20 @@ static void net_lockstep_reset(void) {
     sLsMyPlayer = net_menu_node_id();
     sLsSimSeed = 0x1234; /* shared, identical on every console -> synced sim RNG */
 
-    /* Path A (surgical): the CPU-AI state block (all of cpu_vehicles_camera_path.c's
-     * per-CPU behaviour/path/steering/item-strategy data) is NOT reset at race start,
-     * so it carries menu-history residue that differs host vs joiner (diverges at
-     * frame 0, then propagates into a CPU kart's position ~frame 300). The residue's
-     * VALUE is irrelevant to correctness (offline both consoles shared identical
-     * residue and stayed locked) — only that both AGREE. Zero it identically on every
-     * console at race entry so the CPU sim begins from the same state everywhere.
-     * Applied on the first RACING frame, before the sim reads it (net_lockstep_tick
-     * runs pre-sim). Anchored to the block's boundary symbols (not absolute
-     * addresses) so a relink can't silently mis-target it. */
-    {
-        u8* start = unk_cpu_vehicles_camera_path_pad;
-        u8* end = LS_CPU_STATE_END;
-        bzero(start, (u32) (end - start));
-    }
+    /* NOTE: the CPU-AI block zeroing that used to live here moved to
+     * net_lockstep_prerace_clear() — zeroing at race entry ran AFTER the game
+     * had initialized the real CPU karts (slots np..7 when np < 8), leaving
+     * them lobotomized: frozen at the start line, and star-contact with such a
+     * zombie kart hung the sim on every console (deterministically). Clearing
+     * BEFORE course load keeps the start-state agreement AND lets the game's
+     * own init run on top. */
 
     sCamLocInit = false; /* fresh local-camera context each race */
     sLsStall = false;
     sLsStallCount = 0;
+    sBlkApplied = false;
+    sBlkGot = 0;
+    sBlkSendPos = 0;
 }
 
 /* Apply a DROP — the ONE path used by both receivers and the arbiter, so there is
@@ -966,6 +983,34 @@ void net_lockstep_tick(void) {
 
     f = sLsFrame;
 
+    /* Race-entry block sync: host streams its CPU-AI block (one ch1 chunk per
+     * peer per tick); joiners hold the gate until fully applied. */
+    if (!sBlkApplied) {
+        u32 blkTotal = (u32) (LS_CPU_STATE_END - unk_cpu_vehicles_camera_path_pad);
+        if (me == 0) {
+            if (sBlkSendPos < blkTotal) {
+                LsBlkMsg bm;
+                u32 len = blkTotal - sBlkSendPos;
+                if (len > LSBLK_CHUNK) {
+                    len = LSBLK_CHUNK;
+                }
+                bm.tag = LSBLK_TAG;
+                bm.seq = (u8) (sBlkSendPos / LSBLK_CHUNK);
+                bm.offset = (u16) sBlkSendPos;
+                bm.len = (u16) len;
+                bm.total = (u16) blkTotal;
+                memcpy(bm.data, unk_cpu_vehicles_camera_path_pad + sBlkSendPos, len);
+                for (i = 1; i < np; i++) {
+                    netpak_send((u8) i, 1, &bm, (u16) (8 + len));
+                }
+                sBlkSendPos += len;
+            }
+            if (sBlkSendPos >= blkTotal) {
+                sBlkApplied = true; /* the host's own block IS the reference */
+            }
+        }
+    }
+
     /* Path B — isolated sim RNG. Load the sim's private RNG state into the shared
      * LFSR before the sim runs this frame; net_lockstep_rng_save() (called from
      * race_logic_loop after the sim, before render) snapshots it back. Render and
@@ -1042,6 +1087,16 @@ void net_lockstep_tick(void) {
                     d->frame = fr;
                 }
             }
+        } else if (pkt.ch == 1 && pkt.len >= 8 && pkt.data[0] == LSBLK_TAG) {
+            LsBlkMsg* bm = (LsBlkMsg*) pkt.data;
+            u32 blkTotal = (u32) (LS_CPU_STATE_END - unk_cpu_vehicles_camera_path_pad);
+            if (!sBlkApplied && bm->total == blkTotal && (u32) bm->offset + bm->len <= blkTotal) {
+                memcpy(unk_cpu_vehicles_camera_path_pad + bm->offset, bm->data, bm->len);
+                sBlkGot += bm->len;
+                if (sBlkGot >= blkTotal) {
+                    sBlkApplied = true;
+                }
+            }
         } else if (pkt.ch == 0 && pkt.len >= 8 && pkt.data[0] == LSDROP_TAG) {
             /* arbiter says player X is gone: adopt X's last inputs + last frame L.
              * First DROP accepted wins; repeats for an already-dropped player are
@@ -1101,6 +1156,9 @@ void net_lockstep_tick(void) {
         bool ready = true;
         s32 missing = -1;
         bool missMask[NET_MAX_SLOTS];
+        if (!sBlkApplied) {
+            ready = false; /* hold the sim until the host's block is adopted */
+        }
         for (i = 0; i < np; i++) {
             LsInput* s = &sLsInput[i][df % LS_RING];
             missMask[i] = false;
@@ -1350,6 +1408,21 @@ void net_lockstep_tick(void) {
         }
     }
 #endif /* NET_LOCKSTEP */
+}
+
+/* Pre-race start-state agreement: zero the CPU-AI state block (all of
+ * cpu_vehicles_camera_path.c's per-CPU behaviour/path/steering/item-strategy
+ * bss) BEFORE the course loads. The block carries menu-history residue that
+ * differs host vs joiner; its exact value never mattered — only that every
+ * console agrees. Clearing pre-load lets the game's own course/spawn init run
+ * on top, so the real CPU karts (slots np..7 when fewer than 8 humans) stay
+ * fully functional. Called from net_menu_start_race on every console. */
+void net_lockstep_prerace_clear(void) {
+#if NET_LOCKSTEP
+    u8* start = unk_cpu_vehicles_camera_path_pad;
+    u8* end = LS_CPU_STATE_END;
+    bzero(start, (u32) (end - start));
+#endif
 }
 
 /* Stall-gate query for race_logic_loop: true when net_lockstep_tick could not
