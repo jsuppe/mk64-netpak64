@@ -1890,18 +1890,26 @@ void net_lockstep_cam_push(void) {
     sCamSim1 = *camera1;
     memcpy(sCamSimD300, D_80152300, sizeof(sCamSimD300));
 
-    /* first render of a race: seed the local context from the sim so it starts sane */
+    /* first render of a race: seed the persistent CAMERA state from the sim */
     if (!sCamLocInit) {
-        memcpy(sCamLocBlk, sCamSimBlk, blk);
         sCamLoc1 = sCamSim1;
         memcpy(sCamLocD300, sCamSimD300, sizeof(sCamLocD300));
         sCamLocInit = true;
     }
 
-    /* render against the LOCAL camera context (a copy), and advance the real follow
-     * for the local kart. Rendering against the copy is what keeps the sim's camera
-     * state — and everything the render mutates through it — isolated (a geometric
-     * variant that rendered against the sim's copy desynced at 4p). */
+    /* Render against the LOCAL camera (persistent across frames) but a FRESH
+     * copy of the camera-path/course block, re-seeded from the sim EVERY
+     * frame. The old once-per-race block copy went stale: the renderer reads
+     * course-position bookkeeping out of this block, and stale data drew the
+     * WRONG COURSE CHUNKS around the joiner's kart — geometry where there is
+     * none and none where there is ("drives through the ground and walls",
+     * proven render-side by the live desync detector staying green). The
+     * follow's cross-frame continuity lives in camera1 + D_80152300, which
+     * stay persistent; the block writes it makes during the render are
+     * discarded by the next re-seed. Isolation from the sim is unchanged —
+     * pop still restores the sim's block bytes (a per-console camera follow
+     * writing into sim-read CPU-AI data was the original 4p desync). */
+    memcpy(sCamLocBlk, sCamSimBlk, blk);
     memcpy(unk_cpu_vehicles_camera_path_pad, sCamLocBlk, blk);
     *camera1 = sCamLoc1;
     memcpy(D_80152300, sCamLocD300, sizeof(sCamLocD300));
