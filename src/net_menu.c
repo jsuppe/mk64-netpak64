@@ -694,7 +694,13 @@ void net_menu_update(struct Controller* controller) {
                     sLastErr = 0;
                     sNodeId = netpak_session_join(sCode);
                     if (sNodeId >= 0) {
-                        sState = OM_JOINED;
+                        /* Join-or-create: if the room didn't exist, the relay
+                         * created it and we're node 0 — the de-facto host. Give
+                         * that player the HOST lobby (course picker + START)
+                         * instead of parking them at "WAITING FOR HOST" forever
+                         * (two players who both picked JOIN with a shared launch
+                         * code used to deadlock in guest lobbies). */
+                        sState = (sNodeId == 0) ? OM_HOSTING : OM_JOINED;
                         play_sound2(SOUND_MENU_OK_CLICKED);
                     } else {
                         sLastErr = -sNodeId;
