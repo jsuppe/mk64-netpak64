@@ -91,6 +91,23 @@ typedef struct {
                   * every console simulate a DIFFERENT race). */
 } OnlineMsg; /* 12 bytes */
 
+/* ROM-version cross-check: every lobby control message carries the sender's
+ * NETPAK_ROM_VERSION in OnlineMsg.pad (v12 and older always sent 0). Any
+ * mismatch means the two consoles run DIFFERENT sims — a guaranteed desync —
+ * so it latches here and renders as a persistent warning. */
+static u8 sVerMismatch;  /* the offending peer's version + 1 (0 = none seen) */
+bool net_menu_version_mismatch(u8* peerVer) {
+    if (sVerMismatch != 0 && peerVer != NULL) {
+        *peerVer = (u8) (sVerMismatch - 1);
+    }
+    return sVerMismatch != 0;
+}
+static void net_menu_check_ver(u8 pad) {
+    if (pad != (u8) NETPAK_ROM_VERSION) {
+        sVerMismatch = (u8) (pad + 1);
+    }
+}
+
 enum OnlineMenuState {
     OM_MAIN,       /* HOST GAME / JOIN GAME / NAME */
     OM_HOSTING,    /* created a room; showing code, waiting for players */
@@ -323,6 +340,7 @@ bool net_online_barrier_ready(void) {
     while (netpak_recv(&pkt) == 0) {
         if (pkt.ch == 1 && pkt.len >= (u16)sizeof(OnlineMsg) && pkt.data[0] == OLMSG_TAG) {
             u8 mtype = pkt.data[1];
+            net_menu_check_ver(pkt.data[3]);
             if (sIsHost && mtype == OLMSG_READY) {
                 for (i = 0; i < sBarrierN; i++) {
                     if (sBarrierPeer[i] == pkt.src) {
@@ -396,7 +414,7 @@ bool net_online_barrier_ready(void) {
                     m.tag = OLMSG_TAG;
                     m.type = OLMSG_START;
                     m.course = sOnlineCourse;
-                    m.pad = 0;
+                    m.pad = (u8) NETPAK_ROM_VERSION; /* version cross-check */
                     for (i = 0; i < nr; i++) {
                         netpak_send(roster[i].node_id, 1, &m, sizeof(m));
                     }
@@ -437,7 +455,7 @@ bool net_online_barrier_ready(void) {
             m.tag = OLMSG_TAG;
             m.type = OLMSG_GO;
             m.course = 0;
-            m.pad = 0;
+            m.pad = (u8) NETPAK_ROM_VERSION; /* version cross-check */
             for (k = 0; k < 8; k++) {
                 m.chars[k] = sSyncChars[k];
             }
@@ -451,7 +469,7 @@ bool net_online_barrier_ready(void) {
         m.tag = OLMSG_TAG;
         m.type = OLMSG_READY;
         m.course = 0;
-        m.pad = 0;
+        m.pad = (u8) NETPAK_ROM_VERSION; /* version cross-check */
         for (k = 0; k < 8; k++) {
             m.chars[k] = 0xFF;
         }
@@ -483,11 +501,16 @@ void net_online_barrier_render(void) {
     print_text1_center_mode_1(0xA0, 0x7C, "ALL PLAYERS", 0, 1.0f, 1.0f);
     set_text_color(TEXT_YELLOW);
     print_text1_center_mode_1(0xA0, 0x9A, "TO START", 0, 0.9f, 0.9f);
+    if (sVerMismatch != 0) {
+        set_text_color(TEXT_RED);
+        print_text1_center_mode_1(0xA0, 0xA8, "VERSION MISMATCH", 0, 0.6f, 0.6f);
+    }
 }
 
 void net_menu_reset(void) {
     s32 i;
     sState = OM_MAIN;
+    sVerMismatch = 0; /* fresh session, fresh cross-check */
     sSel = 0;
     sEntryPos = 0;
     sNodeId = -1;
@@ -672,7 +695,7 @@ void net_menu_update(struct Controller* controller) {
                 m.tag = OLMSG_TAG;
                 m.type = OLMSG_START;
                 m.course = sOnlineCourse;
-                m.pad = 0;
+                m.pad = (u8) NETPAK_ROM_VERSION; /* version cross-check */
                 online_msg_send_all(&m);   /* tell the room which track to load */
                 net_menu_start_race();     /* -> character select -> locked course -> race */
             }
@@ -718,6 +741,7 @@ void net_menu_update(struct Controller* controller) {
             while (netpak_recv(&pkt) == 0) {
                 if (pkt.ch == 1 && pkt.len >= (u16)sizeof(OnlineMsg) &&
                     pkt.data[0] == OLMSG_TAG && pkt.data[1] == OLMSG_START) {
+                    net_menu_check_ver(pkt.data[3]);
                     sOnlineCourse = pkt.data[2];
                     net_online_barrier_arm_joiner(pkt.src); /* host node id from START */
                     net_menu_start_race(); /* same track as the host */
@@ -735,7 +759,7 @@ void net_menu_update(struct Controller* controller) {
                 m.tag = OLMSG_TAG;
                 m.type = OLMSG_START;
                 m.course = sOnlineCourse;
-                m.pad = 0;
+                m.pad = (u8) NETPAK_ROM_VERSION; /* version cross-check */
                 online_msg_send_all(&m);
                 net_menu_start_race();
                 return;
@@ -915,6 +939,10 @@ void net_menu_render(void) {
             s32 i;
             s32 y;
             set_text_color(TEXT_GREEN);
+            if (sVerMismatch != 0) {
+                set_text_color(TEXT_RED);
+                print_text1_center_mode_1(0xA0, 0x3E, "VERSION MISMATCH  UPDATE ROMS", 0, 0.55f, 0.55f);
+            }
             print_text1_center_mode_1(0xA0, 0x48, "ROOM CODE", 0, 0.7f, 0.7f);
             set_text_color(TEXT_BLUE_GREEN_RED_CYCLE_1);
             print_text1_center_mode_1(0xA0, 0x5C, sCode, 4, 1.1f, 1.1f);

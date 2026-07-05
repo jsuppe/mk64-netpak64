@@ -1150,8 +1150,18 @@ static void net_lockstep_reset(void) {
     sBlkSendPos = 0;
     sLsDesync = false;
     sLsDesyncFrame = 0;
-    bzero(sLsHashFrame, sizeof(sLsHashFrame));
-    bzero(sLsHashVal, sizeof(sLsHashVal));
+    {
+        /* seed the ring with an impossible frame, NOT zero: a zeroed slot
+         * claims "frame 0, hash 0", so a peer's real frame-0 hash arriving
+         * before we computed frame 0 ourselves (host finishes block-sync a
+         * beat early; real network latency widens the window) latched a FALSE
+         * desync at race entry — red square on a perfectly synced race. */
+        s32 hi;
+        for (hi = 0; hi < LS_HASHRING; hi++) {
+            sLsHashFrame[hi] = 0xFFFFFFFFu;
+        }
+        bzero(sLsHashVal, sizeof(sLsHashVal));
+    }
 }
 
 /* Apply a DROP — the ONE path used by both receivers and the arbiter, so there is
@@ -1222,22 +1232,30 @@ void net_lockstep_tick(void) {
         return;
     }
 #if NET_MENU_TEST && NET_DEMO_AUTODRIVE
-    /* TEMP pause-desync proof: the host console force-pauses for 60 ticks
-     * mid-race (the raw flag is exactly what a START press sets). With
-     * NET_PAUSE_SYNC=0 this must trip the desync detector (0x7D); with 1 it
-     * must stay green. */
+    /* PAUSE regression test, REAL path: at tick 900 the host's captured ring
+     * input carries a one-frame START press, so the vanilla pause loop
+     * (func_8028F970, inside the gated sim) pauses EVERY console at the same
+     * logical frame. While paused, each console pulses START on its local pad
+     * so the real pause-menu resume path runs — like both users unpausing.
+     * Pokes: 0xA5 = injection, 0xA6 = paused (|df), 0xA7 = unpaused. Detector
+     * (0x7D) must stay green throughout. */
     {
-        static u32 sPjTick;
-        if (me == 0) {
-            sPjTick++;
-            if (sPjTick == 900) {
-                netpak_debug_poke(0xA5000900u); /* pause injection begins */
+        static u32 sPjTick, sPjPaused;
+        sPjTick++;
+        if (me == 0 && sPjTick == 900) {
+            gControllers[0].button |= START_BUTTON; /* captured + broadcast below */
+            netpak_debug_poke(0xA5000900u);
+        }
+        if (gIsGamePaused != 0) {
+            if (sPjPaused++ == 0) {
+                netpak_debug_poke(0xA6000000u | (sLsFrame & 0xFFFFFFu));
             }
-            if (sPjTick >= 900 && sPjTick < 960) {
-                gIsGamePaused = 1;
-            } else if (sPjTick == 960) {
-                gIsGamePaused = 0;
+            if (sPjPaused > 90 && (sPjPaused % 20) == 0) {
+                gControllers[0].buttonPressed |= START_BUTTON; /* menu resume */
             }
+        } else if (sPjPaused != 0) {
+            netpak_debug_poke(0xA7000000u | (sLsFrame & 0xFFFFFFu));
+            sPjPaused = 0;
         }
     }
 #endif
@@ -1740,7 +1758,43 @@ void net_lockstep_tick(void) {
                 netpak_debug_poke(0x76000000u | (df & 0xFFFFFFu));
                 netpak_debug_poke(0x77000000u | (h & 0xFFFFFFu));
 
-                /* live desync detector: remember + periodically broadcast */
+#if NET_MENU_TEST
+                /* frame-0 forensics: per-kart state hash (0xB0+k) and the
+                 * char/type table (0xC0+k) at the FIRST simulated frame, so a
+                 * race-entry divergence names its kart + shows whether the
+                 * character roster itself split (barrier fail-forward flake). */
+                if (df == 0) {
+                    for (pi = 0; pi < NUM_PLAYERS; pi++) {
+                        Player* pl = &gPlayers[pi];
+                        u32 kh = 2166136261u;
+                        u32 fld[8];
+                        memcpy(&fld[0], &pl->pos[0], 4);
+                        memcpy(&fld[1], &pl->pos[1], 4);
+                        memcpy(&fld[2], &pl->pos[2], 4);
+                        fld[3] = ((u32) (u16) pl->rotation[0] << 16) | (u16) pl->rotation[1];
+                        fld[4] = ((u32) (u16) pl->rotation[2] << 16) | (u16) pl->lapCount;
+                        memcpy(&fld[5], &pl->speed, 4);
+                        fld[6] = pl->effects;
+                        fld[7] = ((u32) pl->type << 16) | (u16) pl->characterId;
+                        for (fi = 0; fi < 8; fi++) {
+                            kh ^= fld[fi];
+                            kh *= 16777619u;
+                        }
+                        netpak_debug_poke(((0xB0u + (u32) pi) << 24) | (kh & 0xFFFFFFu));
+                        netpak_debug_poke(((0xC0u + (u32) pi) << 24) |
+                                          (((u32) pl->type & 0xFFFFu) << 8) | ((u32) pl->characterId & 0xFFu));
+                    }
+                }
+#endif
+
+                /* live desync detector: remember + periodically broadcast.
+                 * ONLY once f clears the delay ramp: while f < LS_DELAY the
+                 * clamp maps SEVERAL ticks to df=0, each simulating a frame,
+                 * so "hash of frame 0" has three different values in flight.
+                 * A peer's copy arriving one tick late (guaranteed on a real
+                 * network) then compares against a different repeat -> false
+                 * red square at race entry, 100% reproducible on-device. */
+                if (f >= LS_DELAY) {
                 sLsHashFrame[df % LS_HASHRING] = df;
                 sLsHashVal[df % LS_HASHRING] = h;
                 if ((df & 15) == 0) {
@@ -1751,6 +1805,7 @@ void net_lockstep_tick(void) {
                     hm.frame = df;
                     hm.hash = h;
                     netpak_send(NETPAK_BROADCAST, 0, &hm, sizeof(hm));
+                }
                 }
             }
 
