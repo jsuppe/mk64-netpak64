@@ -60,6 +60,18 @@ extern void osSyncPrintf(const char* fmt, ...); /* declared in PR/os.h (not via 
  * NP64_TRACE_IO. */
 #define NET_MENU_TEST 0
 
+/* RETIRED (task #34): the RenderSave/camera-array render-write isolation.
+ * It predates RENDER PACING, which locks render:sim 1:1 and makes render-rate
+ * writes schedule-deterministic by construction — campaign verified 3/3
+ * bit-identical with this OFF. Worse, the isolation itself was the "host
+ * black screen / invisible karts" bug: restoring animFrameSelector after
+ * every render permanently desynced the kart sprite streaming cache
+ * (gLastAnimFrameSelector in render_player.c compares against values the
+ * restore kept rewinding), starving kart textures — garbled HUD glyphs,
+ * invisible karts, and a fully void 3D scene on the console whose camera
+ * watches kart 0. Kept compiled-out for reference / emergency re-enable. */
+#define NET_RENDER_ISOLATION 0
+
 /* Determinism probe: run an identical OFFLINE race on two instances with
  * identical scripted inputs and NO networking, hashing all 8 karts' sim state
  * each frame. If the two hash streams match frame-for-frame, MK64-on-ares is
@@ -1613,6 +1625,7 @@ void net_lockstep_cam_push(void) {
      * except briefly after bumps, so the leak fires as a rare binary lottery
      * (the frame-310 divergence, same two alternate hashes every occurrence).
      * Snapshot every kart's region before render; pop restores. */
+#if NET_RENDER_ISOLATION
     if (netpak_present() && net_menu_online_active() && gGamestate == RACING) {
         for (pi = 0; pi < NET_MAX_SLOTS; pi++) {
             RSAVE_CP(sPlySave[pi], gPlayers, pi);
@@ -1620,6 +1633,7 @@ void net_lockstep_cam_push(void) {
         memcpy(sCamArrSave, D_801645D0, sizeof(sCamArrSave));
         sDb4Active = true;
     }
+#endif
 
     sCamActive = 0;
     if (ls == 0) {
@@ -1690,13 +1704,25 @@ void net_lockstep_cam_pop(void) {
     u32 blk;
     s32 pi;
 
+#if NET_RENDER_ISOLATION
     if (sDb4Active) {
+        { /* TEMP #34: render-list count + kart visibility bits, post-render */
+            extern s32 gPlayersToRenderCount;
+            static u32 rlDbg;
+            if ((rlDbg++ & 15) == 0 || gPlayersToRenderCount == 0) {
+                netpak_debug_poke(0xDD000000u |
+                                  ((u32) (gPlayers[1].unk_002 & 0xFF) << 16) |
+                                  ((u32) (gPlayers[0].unk_002 & 0xFF) << 8) |
+                                  ((u32) gPlayersToRenderCount & 0xFF));
+            }
+        }
         for (pi = 0; pi < NET_MAX_SLOTS; pi++) {
             RSAVE_RS(gPlayers, pi, sPlySave[pi]);
         }
         memcpy(D_801645D0, sCamArrSave, sizeof(sCamArrSave));
         sDb4Active = false;
     }
+#endif
 
     if (sCamActive == 0) {
         return;
