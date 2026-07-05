@@ -663,6 +663,7 @@ void race_logic_loop(void) {
             render_player_one_1p_screen();
             net_lockstep_cam_pop();
             net_lockstep_desync_indicator(); /* red flash if the sims have split */
+            net_render_cull_diag(); /* TEMP: drawn-chunk vs kart-section telemetry */
             net_autodrive_overlay(); /* test builds: show the AI's injected inputs */
             if (!gEnableDebugMode) {
                 D_800DC514 = false;

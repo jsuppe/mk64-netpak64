@@ -18,6 +18,8 @@
 #include "courses/all_course_packed.h"
 #include "courses/all_course_offsets.h"
 
+extern s16 gNetCullSection; /* NetPak64: lives in netbss (net_race.c) */
+
 s16 D_802B87B0 = 995;
 s16 D_802B87B4 = 1000;
 UNUSED s32 D_802B87B8 = 0;
@@ -176,6 +178,7 @@ void render_course_segments(uintptr_t addr, struct UnkStruct_800DC5EC* arg1) {
     }
 
     arg1->pathCounter = index;
+    gNetCullSection = (s16) index; /* NetPak64 diag: the chunk actually drawn */
     index = ((index - 1) * 4) + direction;
     gSPDisplayList(gDisplayListHead++, gfx[index]);
 }

@@ -963,7 +963,7 @@ void net_race_debug_tick(void) {
  * increment builds + validates the transport (both consoles receive each
  * other's inputs, aligned by frame); the sim rewire — drive the native 2-4p VS
  * karts from this buffer, single-viewport render, input-delay gate — follows. */
-#define NET_LOCKSTEP 0
+#define NET_LOCKSTEP 1
 
 /* Test-only: inject artificial inbound packet loss to exercise the stall gate on a
  * loss-free LAN. Drops a short burst (< LS_REDUN, so the input still arrives in a
@@ -1065,6 +1065,10 @@ static u32  sBlkSendPos;
  * the arbiter itself dies immediately after sending to only SOME peers, the
  * next arbiter may compute a different L -> split. Acceptable for now. */
 #define LSDROP_TAG    0x44 /* 'D' */
+#define NET_PAUSE_SYNC 1 /* freeze the lockstep timeline while paused (the fix
+                          * for the pause->red-square desync); 0 = old behavior
+                          * for A/B proof runs */
+#define LSHOLD_TAG 0x49 /* "I'm paused, don't drop me": resets the peer's stall clock */
 #define LS_DROP_TICKS 240  /* stalled render-ticks on one frame before peer-table check */
 #define LS_DROP_HARD  900  /* stalled ticks -> drop even if the relay still lists them */
 typedef struct {
@@ -1217,6 +1221,27 @@ void net_lockstep_tick(void) {
     if (me < 0 || me >= NET_MAX_SLOTS) {
         return;
     }
+#if NET_MENU_TEST && NET_DEMO_AUTODRIVE
+    /* TEMP pause-desync proof: the host console force-pauses for 60 ticks
+     * mid-race (the raw flag is exactly what a START press sets). With
+     * NET_PAUSE_SYNC=0 this must trip the desync detector (0x7D); with 1 it
+     * must stay green. */
+    {
+        static u32 sPjTick;
+        if (me == 0) {
+            sPjTick++;
+            if (sPjTick == 900) {
+                netpak_debug_poke(0xA5000900u); /* pause injection begins */
+            }
+            if (sPjTick >= 900 && sPjTick < 960) {
+                gIsGamePaused = 1;
+            } else if (sPjTick == 960) {
+                gIsGamePaused = 0;
+            }
+        }
+    }
+#endif
+
     np = net_menu_player_count();
     if (np > NET_MAX_SLOTS) {
         np = NET_MAX_SLOTS;
@@ -1295,7 +1320,7 @@ void net_lockstep_tick(void) {
      * hasn't advanced) the input for frame f is already committed + broadcast to the
      * peer, so re-reading the controller here would rewrite an input the peer may be
      * about to consume. Only capture on a fresh frame. */
-    if (!sLsStall) {
+    if (!sLsStall && gIsGamePaused == 0) {
         LsInput* s = &sLsInput[me][f % LS_RING];
         s->button = gControllers[0].button;
         s->stickX = (s8) gControllers[0].rawStickX;
@@ -1347,6 +1372,13 @@ void net_lockstep_tick(void) {
                 sLsDesyncFrame = hm->frame;
                 netpak_debug_poke(0x7D000000u | (hm->frame & 0xFFFFFFu));
             }
+            continue;
+        }
+        if (pkt.ch == 0 && pkt.data[0] == LSHOLD_TAG) {
+            /* a peer is sitting in the pause menu: keep waiting for them instead
+             * of escalating the stall into a DROP (which would CPU-convert a
+             * player who is merely paused) */
+            sLsStallTicks = 0;
             continue;
         }
         if (pkt.ch == 0 && pkt.len >= 8 && pkt.data[0] == LS_TAG) {
@@ -1423,6 +1455,29 @@ void net_lockstep_tick(void) {
             }
         }
     }
+
+    /* NETWORKED PAUSE. While the local player sits in the pause menu the sim is
+     * halted (race_logic_loop's gIsGamePaused gate), so the lockstep timeline
+     * must halt with it: no new frame is captured (gate above) and the frame
+     * counter must not advance — otherwise inputs are consumed for frames this
+     * console never simulated, splitting the sims the moment anyone pauses (the
+     * on-device red-square desync). Every other console blocks on its stall
+     * gate within LS_DELAY frames, so the whole race freezes together, exactly
+     * like split-screen pause. A periodic HOLD keeps the drop protocol from
+     * CPU-converting us; ingest above still ran, so nothing backs up. QUIT from
+     * the pause menu leaves the race and the normal drop protocol takes over. */
+#if NET_PAUSE_SYNC
+    if (gIsGamePaused != 0) {
+        static u32 holdTick;
+        if ((holdTick++ & 31) == 0) {
+            u32 hold = ((u32) LSHOLD_TAG << 24) | (u32) me;
+            netpak_send(NETPAK_BROADCAST, 0, &hold, sizeof(hold));
+        }
+        sLsRngActive = false; /* pause-menu draws may roll gRandomSeed16; don't
+                               * let rng_save snapshot that into the sim seed */
+        return;
+    }
+#endif
 
     /* STALL GATE. Simulate logical frame df only when EVERY player's input for it
      * has arrived; otherwise freeze (race_logic_loop skips the sim while
@@ -1992,6 +2047,27 @@ void net_lockstep_cam_pop(void) {
     D_800DC5EC->player = &gPlayers[0]; /* restore the renderer's player (segment culling) */
 
     sCamActive = 0;
+#endif
+}
+
+s16 gNetCullSection; /* written by render_courses.c: last course chunk drawn */
+
+/* TEMP #31 render diag: which course chunk the renderer chose vs the section
+ * the LOCAL kart is actually in. Persistent mismatch = the joiner's 'drives
+ * through walls' world-misdraw, now measurable in the harness. */
+void net_render_cull_diag(void) {
+#if NET_LOCKSTEP && NET_MENU_TEST
+    extern s16 get_track_section_id(u16);
+    static u32 cdDbg;
+    s32 ls = net_lockstep_local_slot();
+    if (!netpak_present() || !net_menu_online_active() || gGamestate != RACING) {
+        return;
+    }
+    if ((cdDbg++ & 15) == 0) {
+        s32 kartSec = get_track_section_id(gPlayers[ls].collision.meshIndexZX);
+        netpak_debug_poke(0xDE000000u | ((u32) (ls & 0xF) << 20) |
+                          (((u32) gNetCullSection & 0xFF) << 8) | ((u32) kartSec & 0xFF));
+    }
 #endif
 }
 

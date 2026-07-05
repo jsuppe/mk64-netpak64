@@ -74,6 +74,9 @@ void net_lockstep_cam_pop(void);
  * keeps the real CPU karts functional). Call from the online race launch. */
 void net_lockstep_prerace_clear(void);
 
+/* TEMP diag: drawn course chunk vs local kart section (test builds). */
+void net_render_cull_diag(void);
+
 /* Live desync indicator: flashing red square once peer sim-hashes mismatch.
  * Call right after net_lockstep_cam_pop() while the display list is open. */
 void net_lockstep_desync_indicator(void);
