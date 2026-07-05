@@ -1030,6 +1030,25 @@ typedef struct {
     u8  data[LSBLK_CHUNK];
 } LsBlkMsg;
 static bool sBlkApplied;
+
+/* LIVE DESYNC DETECTOR: consoles broadcast (frame, sim-hash) every 16 frames
+ * on ch0 (tag 0x48 'H'); each console checks peers' hashes against its own
+ * ring. First mismatch latches sLsDesync — rendered as a flashing red square
+ * (top-left) so a HUMAN race reports divergence the moment it happens instead
+ * of through 'the other kart is driving through walls' symptom reports. */
+#define LS_HASHRING 64
+static u32  sLsHashFrame[LS_HASHRING];
+static u32  sLsHashVal[LS_HASHRING];
+static u32  sLsDesyncFrame; /* first mismatching frame (0 = none) */
+static bool sLsDesync;
+typedef struct {
+    u8  tag;   /* 0x48 */
+    u8  pad;
+    u16 pad2;
+    u32 frame;
+    u32 hash;
+} LsHashMsg; /* 12 bytes */
+#define LSHASH_TAG 0x48
 static u32  sBlkGot;
 static u32  sBlkSendPos;
 
@@ -1125,6 +1144,10 @@ static void net_lockstep_reset(void) {
     sBlkApplied = false;
     sBlkGot = 0;
     sBlkSendPos = 0;
+    sLsDesync = false;
+    sLsDesyncFrame = 0;
+    bzero(sLsHashFrame, sizeof(sLsHashFrame));
+    bzero(sLsHashVal, sizeof(sLsHashVal));
 }
 
 /* Apply a DROP — the ONE path used by both receivers and the arbiter, so there is
@@ -1315,6 +1338,17 @@ void net_lockstep_tick(void) {
     }
 #endif
     while (netpak_recv(&pkt) == 0) {
+        if (pkt.ch == 0 && pkt.len >= (u16) sizeof(LsHashMsg) && pkt.data[0] == LSHASH_TAG) {
+            /* live desync check: compare the peer's (frame, hash) to ours */
+            const LsHashMsg* hm = (const LsHashMsg*) pkt.data;
+            if (!sLsDesync && sLsHashFrame[hm->frame % LS_HASHRING] == hm->frame &&
+                sLsHashVal[hm->frame % LS_HASHRING] != hm->hash) {
+                sLsDesync = true;
+                sLsDesyncFrame = hm->frame;
+                netpak_debug_poke(0x7D000000u | (hm->frame & 0xFFFFFFu));
+            }
+            continue;
+        }
         if (pkt.ch == 0 && pkt.len >= 8 && pkt.data[0] == LS_TAG) {
             LsPacket* rp = (LsPacket*) pkt.data;
             s32 pl = rp->player;
@@ -1650,6 +1684,19 @@ void net_lockstep_tick(void) {
                 }
                 netpak_debug_poke(0x76000000u | (df & 0xFFFFFFu));
                 netpak_debug_poke(0x77000000u | (h & 0xFFFFFFu));
+
+                /* live desync detector: remember + periodically broadcast */
+                sLsHashFrame[df % LS_HASHRING] = df;
+                sLsHashVal[df % LS_HASHRING] = h;
+                if ((df & 15) == 0) {
+                    LsHashMsg hm;
+                    hm.tag = LSHASH_TAG;
+                    hm.pad = 0;
+                    hm.pad2 = 0;
+                    hm.frame = df;
+                    hm.hash = h;
+                    netpak_send(NETPAK_BROADCAST, 0, &hm, sizeof(hm));
+                }
             }
 
             sLsFrame++;
@@ -1937,6 +1984,30 @@ void net_lockstep_cam_pop(void) {
     D_800DC5EC->player = &gPlayers[0]; /* restore the renderer's player (segment culling) */
 
     sCamActive = 0;
+#endif
+}
+
+/* DESYNC indicator (ships in ALL online builds): once the live detector has
+ * latched, flash a red square top-left of the race view every other half
+ * second. If a player sees it, the two consoles' simulations have split and
+ * everything after is untrustworthy — report the moment it appeared. */
+void net_lockstep_desync_indicator(void) {
+#if NET_LOCKSTEP
+    extern Gfx* gDisplayListHead;
+    if (!sLsDesync || gGamestate != RACING) {
+        return;
+    }
+    if (sRaceFrames & 16) {
+        return; /* flash */
+    }
+    gDPPipeSync(gDisplayListHead++);
+    gDPSetRenderMode(gDisplayListHead++, G_RM_OPA_SURF, G_RM_OPA_SURF2);
+    gDPSetCycleType(gDisplayListHead++, G_CYC_FILL);
+    gDPSetFillColor(gDisplayListHead++,
+                    (GPACK_RGBA5551(255, 0, 0, 1) << 16) | GPACK_RGBA5551(255, 0, 0, 1));
+    gDPFillRectangle(gDisplayListHead++, 12, 12, 26, 26);
+    gDPPipeSync(gDisplayListHead++);
+    gDPSetCycleType(gDisplayListHead++, G_CYC_1CYCLE);
 #endif
 }
 

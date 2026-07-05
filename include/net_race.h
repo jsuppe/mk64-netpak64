@@ -74,6 +74,10 @@ void net_lockstep_cam_pop(void);
  * keeps the real CPU karts functional). Call from the online race launch. */
 void net_lockstep_prerace_clear(void);
 
+/* Live desync indicator: flashing red square once peer sim-hashes mismatch.
+ * Call right after net_lockstep_cam_pop() while the display list is open. */
+void net_lockstep_desync_indicator(void);
+
 /* Stall gate: true when the lockstep tick could not assemble every player's input
  * for the frame about to be simulated, so the sim must be held this render-frame
  * (both consoles freeze in sync rather than desyncing on a mismatched input).
