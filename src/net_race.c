@@ -2062,10 +2062,28 @@ void net_lockstep_cam_push(void) {
 /* Local chase-cam, part 2 (call AFTER render_player_one_1p_screen): persist the local
  * camera context, then restore the sim's camera state so the next sim frame is
  * bit-identical. Pairs with cam_push. */
+static u8  sDiagCamMode;   /* LOCAL view camera health, sampled in cam_pop */
+static u8  sDiagCamPid;    /*   BEFORE the sim camera is restored */
+static u16 sDiagCamDist;
+
 void net_lockstep_cam_pop(void) {
 #if NET_LOCKSTEP
     u32 blk;
     s32 pi;
+
+#if NET_MENU_TEST || NET_DIAG
+    { /* sample the LOCAL view camera before restoring the sim's (0xDF poke
+       * reads these — sampling after the restore measured the HOST's camera
+       * from the joiner's kart: always pegged at max) */
+        s32 dls = net_lockstep_local_slot();
+        f32 dx = camera1->pos[0] - gPlayers[dls].pos[0];
+        f32 dz = camera1->pos[2] - gPlayers[dls].pos[2];
+        u32 dd = (u32) ((dx < 0.0f ? -dx : dx) + (dz < 0.0f ? -dz : dz));
+        sDiagCamMode = (u8) D_80152300[0];
+        sDiagCamPid = (u8) (camera1->playerId & 0xF);
+        sDiagCamDist = (u16) (dd > 0xFFF ? 0xFFF : dd);
+    }
+#endif
 
 #if NET_RENDER_ISOLATION
     if (sDb4Active) {
@@ -2125,22 +2143,22 @@ void net_render_cull_diag(void) {
     }
     if ((cdDbg++ & 15) == 0) {
         s32 kartSec = get_track_section_id(gPlayers[ls].collision.meshIndexZX);
-        Camera* cam = camera1;
-        f32 dx = cam->pos[0] - gPlayers[ls].pos[0];
-        f32 dz = cam->pos[2] - gPlayers[ls].pos[2];
-        u32 dist = (u32) ((dx < 0.0f ? -dx : dx) + (dz < 0.0f ? -dz : dz)); /* manhattan */
-        if (dist > 0xFFF) {
-            dist = 0xFFF;
+        if (ls == 0) { /* host: no push/pop — sample the live camera here */
+            f32 dx = camera1->pos[0] - gPlayers[0].pos[0];
+            f32 dz = camera1->pos[2] - gPlayers[0].pos[2];
+            u32 dd = (u32) ((dx < 0.0f ? -dx : dx) + (dz < 0.0f ? -dz : dz));
+            sDiagCamMode = (u8) D_80152300[0];
+            sDiagCamPid = (u8) (camera1->playerId & 0xF);
+            sDiagCamDist = (u16) (dd > 0xFFF ? 0xFFF : dd);
         }
         /* 0xDE: drawn course chunk vs the section the kart is really in */
         netpak_debug_poke(0xDE000000u | ((u32) (ls & 0xF) << 20) |
                           (((u32) gNetCullSection & 0xFF) << 8) | ((u32) kartSec & 0xFF));
-        /* 0xDF: camera health — camera MODE (D_80152300[0]: 8=intro, 1=chase),
-         * followed playerId, XZ manhattan distance to the local kart. A healthy
-         * chase cam sits a few hundred units back; a detached one (the
-         * on-device 'view drives through the world' bug) drifts off. */
-        netpak_debug_poke(0xDF000000u | (((u32) (u8) D_80152300[0] & 0xFFu) << 16) |
-                          ((u32) (cam->playerId & 0xF) << 12) | (dist & 0xFFFu));
+        /* 0xDF: LOCAL view camera health — mode (8=intro, 1=chase), followed
+         * playerId, XZ manhattan distance to the local kart (joiner values
+         * sampled in cam_pop before the sim camera is restored). */
+        netpak_debug_poke(0xDF000000u | (((u32) sDiagCamMode & 0xFFu) << 16) |
+                          ((u32) (sDiagCamPid & 0xFu) << 12) | ((u32) sDiagCamDist & 0xFFFu));
         /* local kart trail (kartplot.py-compatible tags) */
         netpak_debug_poke(((0x80u + (u32) ls) << 24) | (u16) (s16) gPlayers[ls].pos[0]);
         netpak_debug_poke(((0x90u + (u32) ls) << 24) | (u16) (s16) gPlayers[ls].pos[2]);
