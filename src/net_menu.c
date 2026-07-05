@@ -296,6 +296,37 @@ bool net_online_barrier_ready(void) {
                         netpak_debug_poke(0xF3000000u | sBarrierPeer[i]); /* peer left at barrier */
                     }
                 }
+                /* LATECOMERS: with explicit join (v4+), a player can confirm the
+                 * room code after the host pressed START and miss the one-shot
+                 * OLMSG_START. Adopt anyone now in the room into the barrier set
+                 * and re-send START (with the course) so they catch up — the
+                 * whole room still launches together. Peers already past the
+                 * lobby drain and ignore the duplicate START. */
+                for (i = 0; i < nr && sBarrierN < 8; i++) {
+                    s32 j;
+                    bool known = false;
+                    for (j = 0; j < sBarrierN; j++) {
+                        if (sBarrierPeer[j] == roster[i].node_id) {
+                            known = true;
+                        }
+                    }
+                    if (!known) {
+                        sBarrierPeer[sBarrierN] = roster[i].node_id;
+                        sBarrierReady[sBarrierN] = false;
+                        sBarrierN++;
+                        netpak_debug_poke(0xF4000000u | roster[i].node_id); /* latecomer adopted */
+                    }
+                }
+                {
+                    OnlineMsg m;
+                    m.tag = OLMSG_TAG;
+                    m.type = OLMSG_START;
+                    m.course = sOnlineCourse;
+                    m.pad = 0;
+                    for (i = 0; i < nr; i++) {
+                        netpak_send(roster[i].node_id, 1, &m, sizeof(m));
+                    }
+                }
             } else {
                 bool hostPresent = false;
                 for (i = 0; i < nr; i++) {

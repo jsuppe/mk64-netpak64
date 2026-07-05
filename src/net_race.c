@@ -117,11 +117,14 @@ static void net_race_menu_test(void) {
                                  * touching harness/bot instances named via NP64_NAME. */
             static s32 onlineStep;
             static s32 doRename = -1;
+            static s32 isAlice;
             if (doRename < 0) {
                 char nm[16];
                 netpak_get_name(nm);
                 doRename = (nm[0] == 'p' && nm[1] == 'l' && nm[2] == 'a' && nm[3] == 'y' &&
                             nm[4] == 'e' && nm[5] == 'r' && nm[6] == '\0');
+                isAlice = (nm[0] == 'a' && nm[1] == 'l' && nm[2] == 'i' && nm[3] == 'c' &&
+                           nm[4] == 'e' && nm[5] == '\0');
             }
             netpak_debug_poke(0xF0000000u | (u32)(onlineStep & 0xFF));
             if (doRename) {
@@ -141,7 +144,20 @@ static void net_race_menu_test(void) {
                     case 1: press = D_JPAD;        break; /* cursor HOST -> JOIN */
                     case 2: press = A_BUTTON;      break; /* JOIN -> code entry (pre-filled) */
                     case 3: press = A_BUTTON;      break; /* confirm code -> OM_JOINED */
-                    case 8: press = START_BUTTON;  break; /* self-start -> character select */
+                    default:
+                        /* With explicit join (v4+) the room fills over ~10-30s as
+                         * staggered instances walk the menus — starting blind put
+                         * one kart in a race of CPUs. Only "alice" starts, once
+                         * the room is full (8) or after a generous fallback; the
+                         * barrier's latecomer adoption covers any straggler. Bot
+                         * instances (bot1..7) therefore never self-start a
+                         * human's race. */
+                        if (isAlice && onlineStep >= 8 && (onlineStep % 4) == 0) {
+                            if (net_menu_player_count() >= 8 || onlineStep >= 150) {
+                                press = START_BUTTON;
+                            }
+                        }
+                        break;
                 }
             }
             onlineStep++;
