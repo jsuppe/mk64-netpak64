@@ -636,6 +636,10 @@ void race_logic_loop(void) {
                     func_802909F0();
                     evaluate_collision_for_players_and_actors();
                     handle_a_press_for_all_players_during_race();
+                    /* Online lockstep: 1P GP routes drive input to player 0 only;
+                     * run the same handler for the other human slots so remote
+                     * players' karts actually drive (identical on every console). */
+                    net_lockstep_drive_humans();
                     func_8001EE98(gPlayerOneCopy, camera1, 0);
                     func_80028F70();
                     func_8028F474();

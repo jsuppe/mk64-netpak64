@@ -1491,6 +1491,40 @@ void net_lockstep_rng_save(void) {
 #endif
 }
 
+/* THE PARKED-KART FIX: 1P-mode Grand Prix runs the HUMAN drive handler
+ * (throttle / brake / steering routing) for PLAYER 0 ONLY —
+ * handle_a_press_for_all_players_during_race() early-returns after
+ * (gPlayerOne, gControllerOne, 0). Slots 1..7, which lockstep types HUMAN,
+ * got per-player physics but no input routing and no CPU AI: they rolled to
+ * the grid during staging and sat parked forever. So every console only ever
+ * DROVE kart 0 — the host's — which read as "someone else controls the kart
+ * I'm looking at" on joiners, and left each joiner's own kart dead on the
+ * grid. Run the real handler for every other live human slot, fed by its
+ * ring-driven controller (the drive loop already fills gControllers[i]).
+ * Types and controller contents are identical on every console, so the added
+ * calls are deterministic. The handler self-gates on HUMAN && !CPU, so
+ * dropped players (converted to CPU bots) are skipped automatically.
+ * Call from race_logic_loop's sim block, right after the game's own
+ * handle_a_press_for_all_players_during_race(). */
+void net_lockstep_drive_humans(void) {
+#if NET_LOCKSTEP
+    extern void handle_a_press_for_player_during_race(Player*, struct Controller*, s8);
+    extern s32 net_menu_player_count(void);
+    s32 i;
+    s32 np;
+    if (!netpak_present() || !net_menu_online_active() || gGamestate != RACING) {
+        return;
+    }
+    np = net_menu_player_count();
+    if (np > NET_MAX_SLOTS) {
+        np = NET_MAX_SLOTS;
+    }
+    for (i = 1; i < np; i++) {
+        handle_a_press_for_player_during_race(&gPlayers[i], &gControllers[i], (s8) i);
+    }
+#endif
+}
+
 /* Camera retarget (render-only): which slot the local 1P viewport should follow.
  * In an online lockstep race every console runs the same 8-kart sim but each
  * player OWNS a different slot (= node id), so the local camera must track the

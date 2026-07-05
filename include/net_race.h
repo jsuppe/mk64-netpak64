@@ -48,6 +48,12 @@ void net_lockstep_tick(void);
  * render. No-op unless an online lockstep race is active. */
 void net_lockstep_rng_save(void);
 
+/* Run the HUMAN drive handler for lockstep slots 1..N-1 (1P-mode GP only runs
+ * it for player 0, leaving every remote player's kart parked at the grid).
+ * Call from race_logic_loop's sim block right after
+ * handle_a_press_for_all_players_during_race(). No-op offline. */
+void net_lockstep_drive_humans(void);
+
 /* Camera retarget: the slot the local 1P viewport/camera should follow. Returns
  * the local node's slot during an online lockstep race, 0 otherwise. Render-only. */
 s32 net_lockstep_local_slot(void);
