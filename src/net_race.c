@@ -771,7 +771,7 @@ void net_race_autodrive(void) {
                 wantB = 1;
             }
 
-            steer = diff / 60 - sAdXtrack;
+            steer = diff / 60 - sAdXtrack; /* pull sign VERIFIED by A/B: flipping it dropped lap coverage 9->6 */
             if (steer > 75) {
                 steer = 75;
             }
