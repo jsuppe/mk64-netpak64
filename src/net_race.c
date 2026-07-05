@@ -653,7 +653,9 @@ void net_race_autodrive(void) {
             TrackPathPoint* tp = &gTrackPaths[gPlayerPathIndex][(gNearestPathPointByPlayerId[me] + 6u) % cnt];
             u16 tgt = atan2s(tp->posX - p->pos[0], tp->posZ - p->pos[2]);
             s16 diff = (s16) (tgt - p->rotation[1]);
-            s32 steer = diff / 328; /* ~full stick at 45 degrees off-target */
+            s32 steer = diff / 82; /* ~full stick at 11 degrees off-target — the old /328
+                                      * gain produced 7-8 on gentle curves, INSIDE the
+                                      * game deadzone (±12): autodrive karts never steered */
             if (steer > 75) {
                 steer = 75;
             }
