@@ -731,7 +731,7 @@ void net_menu_render_version(void) {
     text[n++] = (char) ('0' + v % 10);
     text[n] = '\0';
     set_text_color(TEXT_YELLOW);
-    print_text1_center_mode_1(0xA0, 0xDC, text, 0, 0.6f, 0.6f);
+    print_text1_center_mode_1(0xA0, 0xE4, text, 0, 0.6f, 0.6f);
 }
 
 /* draw one option, highlighted (cycling color) if selected, else plain yellow */

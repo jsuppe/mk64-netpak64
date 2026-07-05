@@ -10,6 +10,7 @@
 #include "code_800029B0.h"
 #include "menu_items.h"
 #include "net_menu.h"
+#include "netpak.h"
 #include "cpu_vehicles_camera_path.h"
 #include "code_8006E9C0.h"
 #include "menus.h"
@@ -1319,6 +1320,10 @@ void func_80091B78(void) {
     }
     gNextFreeMemoryAddress = gFreeMemoryResetAnchor;
     // Hypothetically, this should be a ptr... But only hypothetically.
+    // NOTE (task #33): these menu buffers deliberately overrun the memory pool
+    // into the ending-segment area - vanilla behavior. They MUST stay below the
+    // racing segment (0x8028DF00): init_rdp/init_z_buffer live there and run
+    // during menus. mk64.ld ASSERTs the pool start low enough to guarantee it.
     gMenuTextureBuffer = get_next_available_memory_addr(0x000900B0);
     gMenuCompressedBuffer = get_next_available_memory_addr(0x0000CE00);
     sTKMK00_LowResBuffer = (u8*) get_next_available_memory_addr(SCREEN_WIDTH * SCREEN_HEIGHT);

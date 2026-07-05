@@ -332,9 +332,6 @@ SECTIONS
 
    BEGIN_NOLOAD(main) {
       BUILD_DIR/src/main.o(.bss*);
-      BUILD_DIR/src/netpak_mk64.o(.bss*);
-      BUILD_DIR/src/net_race.o(.bss*);
-      BUILD_DIR/src/net_menu.o(.bss*);
       BUILD_DIR/src/code_800029B0.o(.bss*);
       BUILD_DIR/src/profiler.o(.bss*);
       BUILD_DIR/src/crash_screen.o(.bss*);
@@ -387,6 +384,31 @@ SECTIONS
       . = ALIGN(0x10);
    }
    END_NOLOAD(memoryPool)
+
+   /* NetPak64 bss lives in Expansion Pak RAM (task #33). The menu loader's
+    * texture/vertex buffers deliberately overrun the memory pool (vanilla
+    * behavior); the overrun tops out at pool start + ~0xE9580 and MUST stay
+    * below the racing segment (0x8028DF00) where init_rdp/init_z_buffer —
+    * called during menus — live. Netcode bss in the main segment pushed the
+    * pool start high enough that title-screen vertex writes overwrote that
+    * code (boot freeze leaving the Controller Pak screen). ~114KB of netcode
+    * arrays instead go to 0x80400000+, which the stock game never touches
+    * (ares provides the Expansion Pak by default; NetPak64 requires it).
+    * netpak_boot() zeroes this segment — the boot code only clears main bss. */
+   _netbssSegmentNoloadStart = 0x80400000;
+   .netbss.noload 0x80400000 (NOLOAD) :
+   {
+      BUILD_DIR/src/netpak_mk64.o(.bss*);
+      BUILD_DIR/src/net_race.o(.bss*);
+      BUILD_DIR/src/net_menu.o(.bss*);
+      . = ALIGN(0x10);
+   }
+   _netbssSegmentNoloadEnd = ADDR(.netbss.noload) + SIZEOF(.netbss.noload);
+
+   /* Menu-arena ceiling (task #33): pool start + 0xE9580 <= 0x8028DF00. */
+   ASSERT(_memoryPoolSegmentNoloadStart <= 0x801A4000,
+          "main segment too big: menu buffers would clobber racing-segment code (task #33)")
+
    
    /* 0x8028DF00 0F7510-123640 [2C130] */
    BEGIN_SEG(racing, LINKER_RACING)

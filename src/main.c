@@ -1222,6 +1222,16 @@ struct NetpakDbg {
 struct NetpakDbg gNetpakDbg;
 
 static void netpak_boot(void) {
+    /* Netcode bss lives in Expansion Pak RAM at 0x80400000 (task #33 — keeps
+     * the main segment small enough that the menu loader's pool overrun stays
+     * below the racing-segment code). The boot code only clears main-segment
+     * bss, so zero it here, before any netcode static is touched. */
+    {
+        extern u8 _netbssSegmentNoloadStart[];
+        extern u8 _netbssSegmentNoloadEnd[];
+        bzero(_netbssSegmentNoloadStart,
+              (s32) (_netbssSegmentNoloadEnd - _netbssSegmentNoloadStart));
+    }
     bzero(&gNetpakDbg, sizeof(gNetpakDbg));
     net_race_reset();
     if (netpak_init(false) != 0) {
