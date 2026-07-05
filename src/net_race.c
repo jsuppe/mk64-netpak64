@@ -59,6 +59,11 @@ extern void osSyncPrintf(const char* fmt, ...); /* declared in PR/os.h (not via 
  * 0 to disable. Pokes gMenuSelection (0xE0..) + a 0xFF..F success marker to
  * NP64_TRACE_IO. */
 #define NET_MENU_TEST 0
+/* NET_DIAG: keep the render/position forensics pokes in HUMAN builds so a
+ * player's own session (launcher sets NP64_TRACE_IO=1) captures the evidence
+ * for on-device-only defects. Pokes are single register writes — negligible
+ * without tracing. No autopilot, no sim impact. */
+#define NET_DIAG 1
 
 /* RETIRED (task #34): the RenderSave/camera-array render-write isolation.
  * It predates RENDER PACING, which locks render:sim 1:1 and makes render-rate
@@ -2111,7 +2116,7 @@ s16 gNetCullSection; /* written by render_courses.c: last course chunk drawn */
  * the LOCAL kart is actually in. Persistent mismatch = the joiner's 'drives
  * through walls' world-misdraw, now measurable in the harness. */
 void net_render_cull_diag(void) {
-#if NET_LOCKSTEP && NET_MENU_TEST
+#if NET_LOCKSTEP && (NET_MENU_TEST || NET_DIAG)
     extern s16 get_track_section_id(u16);
     static u32 cdDbg;
     s32 ls = net_lockstep_local_slot();
@@ -2120,8 +2125,25 @@ void net_render_cull_diag(void) {
     }
     if ((cdDbg++ & 15) == 0) {
         s32 kartSec = get_track_section_id(gPlayers[ls].collision.meshIndexZX);
+        Camera* cam = camera1;
+        f32 dx = cam->pos[0] - gPlayers[ls].pos[0];
+        f32 dz = cam->pos[2] - gPlayers[ls].pos[2];
+        u32 dist = (u32) ((dx < 0.0f ? -dx : dx) + (dz < 0.0f ? -dz : dz)); /* manhattan */
+        if (dist > 0xFFF) {
+            dist = 0xFFF;
+        }
+        /* 0xDE: drawn course chunk vs the section the kart is really in */
         netpak_debug_poke(0xDE000000u | ((u32) (ls & 0xF) << 20) |
                           (((u32) gNetCullSection & 0xFF) << 8) | ((u32) kartSec & 0xFF));
+        /* 0xDF: camera health — camera MODE (D_80152300[0]: 8=intro, 1=chase),
+         * followed playerId, XZ manhattan distance to the local kart. A healthy
+         * chase cam sits a few hundred units back; a detached one (the
+         * on-device 'view drives through the world' bug) drifts off. */
+        netpak_debug_poke(0xDF000000u | (((u32) (u8) D_80152300[0] & 0xFFu) << 16) |
+                          ((u32) (cam->playerId & 0xF) << 12) | (dist & 0xFFFu));
+        /* local kart trail (kartplot.py-compatible tags) */
+        netpak_debug_poke(((0x80u + (u32) ls) << 24) | (u16) (s16) gPlayers[ls].pos[0]);
+        netpak_debug_poke(((0x90u + (u32) ls) << 24) | (u16) (s16) gPlayers[ls].pos[2]);
     }
 #endif
 }
