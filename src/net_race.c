@@ -115,9 +115,20 @@ static void net_race_menu_test(void) {
             }
 #endif
             break;
-        case 12: /* CHARACTER_SELECT_MENU: confirm character + OK */
-            press = A_BUTTON;
+        case 12: { /* CHARACTER_SELECT_MENU: pick a per-instance character (cursor
+                    * right node-id times), then confirm + OK — distinct picks
+                    * exercise the character-sync path the way real players do. */
+            extern s32 net_menu_node_id(void);
+            static s32 chMoves;
+            s32 myNode = net_menu_node_id();
+            if (myNode > 0 && chMoves < myNode && chMoves < 7) {
+                press = R_JPAD;
+                chMoves++;
+            } else {
+                press = A_BUTTON;
+            }
             break;
+        }
         case 13: /* COURSE_SELECT_MENU */
 #if NET_DETERMINISM_TEST
             press = A_BUTTON;                     /* GP: cup -> OK -> launch */
@@ -1629,7 +1640,9 @@ void net_lockstep_tick(void) {
                     fld[4] = ((u32) (u16) pl->rotation[2] << 16) | (u16) pl->lapCount;
                     memcpy(&fld[5], &pl->speed, 4);
                     fld[6] = pl->effects;
-                    fld[7] = (u32) pl->type;
+                    fld[7] = ((u32) pl->type << 16) | (u16) pl->characterId; /* char
+                        sync in the hash: unsynced characters = different physics
+                        = silent divergence; now it fails the campaign instead */
                     for (fi = 0; fi < 8; fi++) {
                         h ^= fld[fi];
                         h *= 16777619u;

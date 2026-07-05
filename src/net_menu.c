@@ -32,6 +32,7 @@ extern s16 gPlaceItemBoxes;
 extern s8  gPlayerCount;         /* menus.h */
 extern s8  gDemoUseController;   /* menus.h */
 extern s16 gCurrentCourseId;     /* course.h — the track the race loads */
+extern s8  gCharacterSelections[4]; /* menus.c — this console's character pick */
 extern Gfx* gDisplayListHead;    /* main.h — for the barrier popup's fill box */
 
 /* Room-code alphabet (netpak-spec §5.1): 32 symbols, no 0/O or 1/I. */
@@ -80,11 +81,15 @@ static const OnlineCourse kCourses[] = {
 #define OLMSG_READY 2 /* player -> host: driver picked, I'm at the start barrier */
 #define OLMSG_GO    3 /* host -> peers: everyone's ready, launch the race now */
 typedef struct {
-    u8 tag;    /* OLMSG_TAG */
-    u8 type;   /* OLMSG_* */
-    u8 course; /* course id to load (OLMSG_START) */
+    u8 tag;      /* OLMSG_TAG */
+    u8 type;     /* OLMSG_* */
+    u8 course;   /* course id to load (OLMSG_START) */
     u8 pad;
-} OnlineMsg; /* 4 bytes */
+    u8 chars[8]; /* READY: [0] = sender's character pick.
+                  * GO:    full per-slot character table (CHARACTER SYNC —
+                  * characters have different physics, so unsynced picks made
+                  * every console simulate a DIFFERENT race). */
+} OnlineMsg; /* 12 bytes */
 
 enum OnlineMenuState {
     OM_MAIN,       /* HOST GAME / JOIN GAME / NAME */
@@ -145,6 +150,9 @@ static u32  sBarrierTick;         /* rebroadcast pacing */
 static bool sBarrierWaiting;      /* true while holding at the barrier (drives popup) */
 static u32  sBarrierWaitTicks;    /* frames spent waiting at the barrier (timeout) */
 static u32  sHostGonePolls;       /* lobby: consecutive roster polls with the host absent */
+static u8   sBarrierPick[8];      /* host: character pick reported by each barrier peer */
+static u8   sSyncChars[8];        /* per-slot character table for the coming race */
+static bool sSyncCharsValid;      /* set once the table is agreed (GO) */
 #define BARRIER_TIMEOUT_TICKS 1800 /* ~30 s: fail FORWARD (launch; in-race drop                                     * arbitration turns absentees into bots) */
 #define LOBBY_HOST_GONE_POLLS 6    /* ~3 s of roster polls: fall BACK to the menu                                     * (no course chosen yet, nothing to launch) */
 
@@ -221,6 +229,59 @@ static void online_msg_send_all(const OnlineMsg* m) {
     }
 }
 
+/* Build the shared per-slot character table from the picks the host knows:
+ * humans get their reported picks; remaining slots are filled with the lowest
+ * character ids not taken by a human (dup human picks allowed, like vanilla
+ * VS). Deterministic given the same inputs, and only the HOST's copy matters —
+ * it is broadcast in GO and applied verbatim everywhere. */
+static void build_sync_chars(void) {
+    s32 i;
+    s32 c;
+    bool used[8] = { false, false, false, false, false, false, false, false };
+    for (i = 0; i < 8; i++) {
+        sSyncChars[i] = 0xFF;
+    }
+    if (sNodeId >= 0 && sNodeId < 8) {
+        sSyncChars[sNodeId] = (u8) gCharacterSelections[0];
+        used[sSyncChars[sNodeId] & 7] = true;
+    }
+    for (i = 0; i < sBarrierN; i++) {
+        if (sBarrierPick[i] != 0xFF && sBarrierPeer[i] < 8) {
+            sSyncChars[sBarrierPeer[i]] = sBarrierPick[i];
+            used[sBarrierPick[i] & 7] = true;
+        }
+    }
+    c = 0;
+    for (i = 0; i < 8; i++) {
+        if (sSyncChars[i] == 0xFF) {
+            while (c < 8 && used[c]) {
+                c++;
+            }
+            sSyncChars[i] = (u8) ((c < 8) ? c : (i & 7));
+            if (c < 8) {
+                used[c] = true;
+            }
+        }
+    }
+    sSyncCharsValid = true;
+}
+
+/* Spawn hook: hand the agreed character table to spawn_players_gp_one_player.
+ * Returns true (and fills the game's tables) only for an online race with an
+ * agreed table — the caller then skips its RNG-consuming random roster, which
+ * would otherwise consume the shared sim RNG differently per console. */
+bool net_menu_take_synced_chars(s8* humanChar, s16* cpuChars) {
+    s32 i;
+    if (!sOnlineActive || !sSyncCharsValid) {
+        return false;
+    }
+    *humanChar = (s8) sSyncChars[0];
+    for (i = 0; i < 7; i++) {
+        cpuChars[i] = (s16) sSyncChars[i + 1];
+    }
+    return true;
+}
+
 /* Record the start-barrier role at race start (see the barrier block above). */
 static void net_online_barrier_arm_host(void) {
     s32 i;
@@ -229,6 +290,10 @@ static void net_online_barrier_arm_host(void) {
         sPeerCount = n;
     }
     sIsHost = true;
+    sSyncCharsValid = false;
+    for (i = 0; i < 8; i++) {
+        sBarrierPick[i] = 0xFF;
+    }
     sBarrierN = (sPeerCount < 8) ? sPeerCount : 8;
     for (i = 0; i < sBarrierN; i++) {
         sBarrierPeer[i] = sPeers[i].node_id;
@@ -262,9 +327,18 @@ bool net_online_barrier_ready(void) {
                 for (i = 0; i < sBarrierN; i++) {
                     if (sBarrierPeer[i] == pkt.src) {
                         sBarrierReady[i] = true;
+                        if (pkt.len >= 12) {
+                            sBarrierPick[i] = pkt.data[4]; /* chars[0] = their pick */
+                        }
                     }
                 }
             } else if (!sIsHost && mtype == OLMSG_GO) {
+                if (pkt.len >= 12) { /* adopt the host's character table */
+                    for (i = 0; i < 8; i++) {
+                        sSyncChars[i] = pkt.data[4 + i];
+                    }
+                    sSyncCharsValid = true;
+                }
                 sBarrierWaiting = false;
                 return true; /* joiner launches on the host's GO */
             }
@@ -344,6 +418,7 @@ bool net_online_barrier_ready(void) {
     }
     if (sBarrierWaitTicks > BARRIER_TIMEOUT_TICKS) {
         netpak_debug_poke(0xF2000000u | 0xFFu); /* barrier timeout */
+        build_sync_chars(); /* best-effort table from the picks we know */
         sBarrierWaiting = false;
         return true; /* launch with whoever is coming; drops handle the rest */
     }
@@ -357,20 +432,30 @@ bool net_online_barrier_ready(void) {
         }
         if (all) { /* every joiner reported ready — release the whole room */
             OnlineMsg m;
+            s32 k;
+            build_sync_chars(); /* freeze the character table for this race */
             m.tag = OLMSG_TAG;
             m.type = OLMSG_GO;
             m.course = 0;
             m.pad = 0;
+            for (k = 0; k < 8; k++) {
+                m.chars[k] = sSyncChars[k];
+            }
             online_msg_send_all(&m);
             sBarrierWaiting = false;
             return true;
         }
     } else if ((sBarrierTick++ % 12) == 0) { /* joiner: keep telling the host we're ready */
         OnlineMsg m;
+        s32 k;
         m.tag = OLMSG_TAG;
         m.type = OLMSG_READY;
         m.course = 0;
         m.pad = 0;
+        for (k = 0; k < 8; k++) {
+            m.chars[k] = 0xFF;
+        }
+        m.chars[0] = (u8) gCharacterSelections[0]; /* my pick, for the host's table */
         netpak_send(sHostNode, 1, &m, sizeof(m));
     }
     return false;

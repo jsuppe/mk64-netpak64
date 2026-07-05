@@ -483,8 +483,15 @@ UNUSED s16 D_800E43A4 = 1;
 UNUSED s16 D_800E43A8 = 0;
 
 void spawn_players_gp_one_player(f32* arg0, f32* arg1, f32 arg2) {
+    extern bool net_menu_take_synced_chars(s8*, s16*);
     func_80039DA4();
-    if (((gCourseIndexInCup == COURSE_ONE) && (D_8016556E == 0)) || (gDemoMode == 1) ||
+    /* ONLINE (character sync): use the host-broadcast per-slot character table
+     * and skip the random roster below — its do/while excludes the LOCAL pick,
+     * so with different picks it consumed the shared sim RNG differently on
+     * every console and the simulations diverged from the start line. */
+    if (net_menu_take_synced_chars(&gCharacterSelections[0], cpu_chooseCharacters)) {
+        ;
+    } else if (((gCourseIndexInCup == COURSE_ONE) && (D_8016556E == 0)) || (gDemoMode == 1) ||
         (gDebugMenuSelection == DEBUG_MENU_OPTION_SELECTED)) {
         s16 rand;
         s16 i;

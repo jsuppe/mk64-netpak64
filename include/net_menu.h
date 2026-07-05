@@ -14,7 +14,7 @@
 
 /** Build number shown on the title screen ("JSUPPE VERSION N") so a stale ROM
  *  is obvious at a glance. BUMP THIS every time a new ROM is handed out. */
-#define NETPAK_ROM_VERSION 9
+#define NETPAK_ROM_VERSION 10
 
 /** Enter the online screen fresh (called when NETWORK_VS_MENU is set up). */
 void net_menu_reset(void);
@@ -51,6 +51,12 @@ s32 net_menu_player_count(void);
 /** Clear the pending flag once the OK-confirm launch has been fired, so a later
  * offline race isn't auto-advanced. */
 void net_menu_online_clear(void);
+
+/** Character sync: for an online race with an agreed table (GO handshake),
+ * write slot-0's character into *humanChar and slots 1..7 into cpuChars[7],
+ * and return true — the caller must then SKIP its own random roster (which
+ * consumes the shared sim RNG differently per console). False offline. */
+bool net_menu_take_synced_chars(s8* humanChar, s16* cpuChars);
 
 /** Start-barrier handshake, called each frame while a player holds at the map
  * screen after picking a driver. Returns true once the whole room is ready and
