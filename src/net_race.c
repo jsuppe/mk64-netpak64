@@ -645,17 +645,13 @@ void net_race_autodrive(void) {
     if (!drive) {
         return;
     }
-    /* Waypoint autodrive v3: steer the LOCAL kart toward a speed-scaled
-     * look-ahead point on the course path. Each console computes inputs from
-     * ITS OWN kart -> every console produces DIFFERENT inputs, all flowing
-     * through the real lockstep transport. v3 fixes the v2 wall-crawling:
-     *  - deadzone compensation: the game ignores |stick| <= 12, so any
-     *    intended correction is pushed past it (v2's small outputs were eaten
-     *    and karts only ever wall-slid at full throttle);
-     *  - throttle management: release A when far off-heading so the kart can
-     *    actually rotate through corners instead of plowing into the wall;
-     *  - wrong-way/stuck recovery: if pinned (throttle held, no speed) or
-     *    facing >100 degrees off-path, back up with B while counter-steering. */
+    /* Waypoint autodrive v5. v4's eager reverse-arc recovery physically
+     * clipped karts THROUGH wall corners (position logs showed a bot exiting
+     * the course and driving kilometers off-map in a straight line). v5 is
+     * deliberately conservative: steer at a speed-scaled lookahead, ease the
+     * throttle in corners, pull back toward the nearest waypoint when far off
+     * the line, and only ever reverse in a single short straight burst after
+     * a long genuine pin — never repeatedly, never during the launch. */
     {
         s32 me = 0;
         Player* p;
@@ -663,38 +659,125 @@ void net_race_autodrive(void) {
         s32 steer = 0;
         s32 wantA = 1;
         s32 wantB = 0;
-        static u32 sAdStuck;   /* frames pinned against something at ~zero speed */
-        static u32 sAdBackup;  /* frames left in the current back-up maneuver */
+        static u32 sAdStuck;
+        static u32 sAdRevLeft;
+        static u32 sAdRevCooldown;
+        static u16 sAdLastPt;
+        static s32 sAdXtrack;
+        static s32 sAdPace;
 #if NET_LOCKSTEP
-        /* the CACHED drive-slot (net_lockstep_local_slot), NOT a fresh
-         * net_menu_node_id() — the fresh read is unreliable at render time (same
-         * bug class as the 4p camera): it returned 0 on joiners, so every console
-         * steered by kart-0's heading and item-tested kart 0's inventory. */
         me = net_lockstep_local_slot();
 #endif
         p = &gPlayers[me];
         cnt = gPathCountByPathIndex[gPlayerPathIndex];
         if (cnt != 0) {
-            /* look ahead further the faster we go (4..12 path points) */
-            s32 ahead = 4 + (s32) (p->speed / 3.0f);
-            TrackPathPoint* tp;
+            u16 near = gNearestPathPointByPlayerId[me];
+            TrackPathPoint* np_ = &gTrackPaths[gPlayerPathIndex][near % cnt];
+            f32 ndx = np_->posX - p->pos[0];
+            f32 ndz = np_->posZ - p->pos[2];
+            f32 nd2 = ndx * ndx + ndz * ndz;
             u16 tgt;
             s16 diff;
-            if (ahead > 12) {
-                ahead = 12;
-            }
-            tp = &gTrackPaths[gPlayerPathIndex][((u32) gNearestPathPointByPlayerId[me] + (u32) ahead) % cnt];
-            tgt = atan2s(tp->posX - p->pos[0], tp->posZ - p->pos[2]);
-            diff = (s16) (tgt - p->rotation[1]);
 
-            steer = diff / 60; /* ~full stick at 8 degrees off-target */
+            /* PACE-CAR STRATEGY: the CPU karts lap perfectly, so prefer to
+             * chase the nearest CPU that's 8..60 path points ahead — its
+             * position is always on a drivable line, so walls and hairpins are
+             * dodged by construction. Waypoint pursuit is the fallback. */
+            {
+                s32 k;
+                s32 bestd = 9999;
+                s32 best = -1;
+                for (k = 0; k < 8; k++) {
+                    s32 d;
+                    if ((gPlayers[k].type & PLAYER_CPU) != PLAYER_CPU) {
+                        continue;
+                    }
+                    d = (s32) (((u32) gNearestPathPointByPlayerId[k] + (u32) cnt - (u32) near) % cnt);
+                    if (d >= 8 && d <= 60 && d < bestd) {
+                        bestd = d;
+                        best = k;
+                    }
+                }
+                sAdPace = best;
+            }
+            if (sAdPace >= 0) {
+                tgt = atan2s(gPlayers[sAdPace].pos[0] - p->pos[0],
+                             gPlayers[sAdPace].pos[2] - p->pos[2]);
+                diff = (s16) (tgt - p->rotation[1]);
+            } else if (nd2 > 150.0f * 150.0f) {
+                /* far off the line (escaped/knocked out): aim straight back at
+                 * the nearest waypoint until close again */
+                tgt = atan2s(ndx, ndz);
+                diff = (s16) (tgt - p->rotation[1]);
+            } else {
+                /* pure pursuit with adaptive lookahead: far when aligned, near
+                 * when off-heading — a long lookahead at a hairpin aims ACROSS
+                 * it through the inner wall (both bots wedged at Luigi's first
+                 * hairpin, path index ~79, before this). */
+                s32 ahead = 4 + (s32) (p->speed * 4.0f); /* cruise ~2.0 -> ~12 */
+                TrackPathPoint* tp;
+                if (ahead > 14) {
+                    ahead = 14;
+                }
+                tp = &gTrackPaths[gPlayerPathIndex][((u32) near + (u32) ahead) % cnt];
+                tgt = atan2s(tp->posX - p->pos[0], tp->posZ - p->pos[2]);
+                diff = (s16) (tgt - p->rotation[1]);
+                if (diff > DEGREES(30) || diff < -DEGREES(30)) {
+                    tp = &gTrackPaths[gPlayerPathIndex][((u32) near + 3u) % cnt];
+                    tgt = atan2s(tp->posX - p->pos[0], tp->posZ - p->pos[2]);
+                    diff = (s16) (tgt - p->rotation[1]);
+                }
+            }
+
+            /* cross-track correction (Stanley-lite): add steering proportional
+             * to the signed lateral offset from the path, so the kart is pulled
+             * back to the centerline BEFORE it wall-hugs. Sign from the cross
+             * product of the local path direction and the offset vector. */
+            {
+                TrackPathPoint* np2 = &gTrackPaths[gPlayerPathIndex][((u32) near + 1u) % cnt];
+                f32 dirx = np2->posX - np_->posX;
+                f32 dirz = np2->posZ - np_->posZ;
+                f32 offx = -ndx; /* kart - nearest point */
+                f32 offz = -ndz;
+                f32 cross = dirx * offz - dirz * offx;
+                s32 pull = (s32) (cross * 0.15f);
+                if (pull > 30) {
+                    pull = 30;
+                }
+                if (pull < -30) {
+                    pull = -30;
+                }
+                sAdXtrack = (sAdPace >= 0) ? 0 : pull;
+            }
+
+            /* throttle: full when aligned, eased in corners so the kart can
+             * rotate. When pacing a CPU the target is drivable by construction
+             * and close-follow makes diff swing, so commit harder to the gas. */
+            if (sAdPace >= 0) {
+                if (diff > DEGREES(80) || diff < -DEGREES(80)) {
+                    wantA = (sRaceFrames & 3) != 0;
+                }
+            } else {
+                if (diff > DEGREES(35) || diff < -DEGREES(35)) {
+                    wantA = (sRaceFrames & 3) != 0;
+                }
+                if (diff > DEGREES(80) || diff < -DEGREES(80)) {
+                    wantA = (sRaceFrames & 1);
+                }
+            }
+            /* hairpin overspeed: dab the brake while badly off-heading at pace */
+            if (sAdPace < 0 && (diff > DEGREES(55) || diff < -DEGREES(55)) && p->speed > 1.5f && (sRaceFrames & 7) < 2) {
+                wantA = 0;
+                wantB = 1;
+            }
+
+            steer = diff / 60 - sAdXtrack;
             if (steer > 75) {
                 steer = 75;
             }
             if (steer < -75) {
                 steer = -75;
             }
-            /* deadzone compensation: never emit a correction the game ignores */
             if (steer > 0 && steer < 14) {
                 steer = (diff > DEGREES(1)) ? 14 : 0;
             }
@@ -702,30 +785,26 @@ void net_race_autodrive(void) {
                 steer = (diff < -DEGREES(1)) ? -14 : 0;
             }
 
-            /* corners: ease off the gas when well off-heading */
-            if (diff > DEGREES(35) || diff < -DEGREES(35)) {
-                wantA = (sRaceFrames & 3) != 0; /* 75% throttle pulse */
+            /* last-resort unpin. NOTE: speed is NOT a usable pin signal — a
+             * kart grinding a wall at full throttle still reads cruise speed.
+             * The reliable signal is the path index not advancing. One short
+             * STRAIGHT reverse (arcs clip through walls), long cooldown. */
+            if (sAdRevCooldown != 0) {
+                sAdRevCooldown--;
             }
-            if (diff > DEGREES(70) || diff < -DEGREES(70)) {
-                wantA = (sRaceFrames & 1);      /* 50% while re-orienting */
-            }
-
-            /* pinned against a wall: throttle held but the kart barely moves */
-            if (wantA && p->speed < 1.0f) {
-                sAdStuck++;
-            } else if (p->speed > 3.0f) {
+            if (near != sAdLastPt || sRaceFrames < 300) {
+                sAdLastPt = near;
+                sAdStuck = 0;
+            } else if (++sAdStuck > 150 && sAdRevLeft == 0 && sAdRevCooldown == 0) {
+                sAdRevLeft = 45;
+                sAdRevCooldown = 450;
                 sAdStuck = 0;
             }
-            if (sAdBackup == 0 && (sAdStuck > 45 ||
-                ((diff > DEGREES(100) || diff < -DEGREES(100)) && p->speed < 2.0f))) {
-                sAdBackup = 40; /* ~2/3s of reverse */
-                sAdStuck = 0;
-            }
-            if (sAdBackup != 0) {
-                sAdBackup--;
+            if (sAdRevLeft != 0) {
+                sAdRevLeft--;
                 wantA = 0;
                 wantB = 1;
-                steer = (diff > 0) ? -75 : 75; /* reversing flips the steer sense */
+                steer = 0; /* straight back — arcs are how v4 clipped through walls */
             }
         }
 
@@ -739,6 +818,44 @@ void net_race_autodrive(void) {
         gControllers[0].rawStickX = (s8) steer;
         sAdOverlayStick = (s8) steer; /* input overlay (drawn in cam_pop) */
         sAdOverlayBtn = (u16) ((wantA ? A_BUTTON : 0) | (wantB ? B_BUTTON : 0));
+
+        /* state-machine telemetry: [rev|offline|A|B]<<16 | speed*100 */
+        if ((sRaceFrames & 7) == 0) {
+            netpak_debug_poke(0x5F000000u |
+                              (((sAdRevLeft ? 8u : 0u) |
+                                (wantA ? 2u : 0u) | (wantB ? 1u : 0u)) << 16) |
+                              ((u32) (p->speed * 100.0f) & 0xFFFF));
+        }
+
+        /* progress telemetry: lap + path index, decodable from the trace */
+        if ((sRaceFrames & 63) == 0) {
+            netpak_debug_poke(0x5E000000u | (((u32) (p->lapCount + 1) & 0xF) << 16) | (u16) gNearestPathPointByPlayerId[me]);
+        }
+
+        /* Per-client kart-position log (user request): every console records
+         * ALL 8 karts' x/z each 32 frames — tags 0x80+kart (x, s16) and
+         * 0x90+kart (z, s16) — plus the course waypoints ONCE at race start
+         * (tags 0x9E/0x9F pairs, in path order). netpak/kartplot.py turns a
+         * console's NP64_TRACE_IO log into an SVG of trails over the track. */
+        {
+            static u32 sPosDumped;
+            s32 k;
+            if (!sPosDumped && cnt != 0) {
+                u32 w;
+                sPosDumped = 1;
+                for (w = 0; w < cnt; w++) {
+                    TrackPathPoint* wp = &gTrackPaths[gPlayerPathIndex][w];
+                    netpak_debug_poke(0x9E000000u | (u16) (s16) wp->posX);
+                    netpak_debug_poke(0x9F000000u | (u16) (s16) wp->posZ);
+                }
+            }
+            if ((sRaceFrames & 31) == 0) {
+                for (k = 0; k < 8; k++) {
+                    netpak_debug_poke(((0x80u + (u32) k) << 24) | (u16) (s16) gPlayers[k].pos[0]);
+                    netpak_debug_poke(((0x90u + (u32) k) << 24) | (u16) (s16) gPlayers[k].pos[2]);
+                }
+            }
+        }
 
         /* Scripted item use: when the local kart holds an item, press Z in a short
          * per-slot staggered window (so screenshots can catch each player's item
