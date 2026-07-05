@@ -25,6 +25,11 @@ void net_race_reset(void);
  *  Call from the game loop AFTER read_controllers(). */
 void net_race_autodrive(void);
 
+/** Test-build overlay: draw the autodrive's injected inputs (stick bar + A/B
+ *  lights) over the race view. Call right after net_lockstep_cam_pop() while
+ *  the master display list is open. No-op unless NET_DEMO_AUTODRIVE. */
+void net_autodrive_overlay(void);
+
 /** Returns true exactly once, when the NetPak64 device is connected and it is
  *  time to auto-start the networked race (see net_race.c). The caller then
  *  performs the menu-bypass launch. Always false with no device. */

@@ -199,6 +199,13 @@ static void net_race_menu_test(void) {
 #define NET_DEMO_AUTODRIVE 0
 #define NET_AUTODRIVE_AFTER_FRAMES 45 /* just after start_race() forces GO */
 
+/* Input overlay (test builds): last inputs the autodrive injected for the LOCAL
+ * kart, drawn as a stick bar + button lights over the race view (cam_pop). Each
+ * console shows its OWN injected inputs — makes 'are both karts driven by the
+ * same inputs?' answerable at a glance. */
+static s8  sAdOverlayStick;
+static u16 sAdOverlayBtn;
+
 /* --- Wire format (ch0 payload; opaque to the relay) ----------------------- */
 /* Both peers run the identical ROM, so a raw struct is safe: same field
  * layout, same big-endian byte order. Kept small — 36 bytes, well under the
@@ -638,20 +645,26 @@ void net_race_autodrive(void) {
     if (!drive) {
         return;
     }
-    gControllers[0].button |= A_BUTTON;        /* held accelerate */
-    gControllers[0].buttonPressed |= A_BUTTON; /* and the initial press */
-    gControllers[0].rawStickX = 0;             /* straight, overridden below when steering */
-
-    /* Waypoint autodrive v2: steer the LOCAL kart toward a look-ahead point on the
-     * course path (the same data the CPU AI follows), so scripted karts drive real
-     * laps and stay on track. Each console computes steering from ITS OWN kart's
-     * position -> every console produces DIFFERENT inputs, all flowing through the
-     * real lockstep transport (unlike the identical hold-A drive, which masked
-     * input-identity bugs). */
+    /* Waypoint autodrive v3: steer the LOCAL kart toward a speed-scaled
+     * look-ahead point on the course path. Each console computes inputs from
+     * ITS OWN kart -> every console produces DIFFERENT inputs, all flowing
+     * through the real lockstep transport. v3 fixes the v2 wall-crawling:
+     *  - deadzone compensation: the game ignores |stick| <= 12, so any
+     *    intended correction is pushed past it (v2's small outputs were eaten
+     *    and karts only ever wall-slid at full throttle);
+     *  - throttle management: release A when far off-heading so the kart can
+     *    actually rotate through corners instead of plowing into the wall;
+     *  - wrong-way/stuck recovery: if pinned (throttle held, no speed) or
+     *    facing >100 degrees off-path, back up with B while counter-steering. */
     {
         s32 me = 0;
         Player* p;
         u16 cnt;
+        s32 steer = 0;
+        s32 wantA = 1;
+        s32 wantB = 0;
+        static u32 sAdStuck;   /* frames pinned against something at ~zero speed */
+        static u32 sAdBackup;  /* frames left in the current back-up maneuver */
 #if NET_LOCKSTEP
         /* the CACHED drive-slot (net_lockstep_local_slot), NOT a fresh
          * net_menu_node_id() — the fresh read is unreliable at render time (same
@@ -662,20 +675,70 @@ void net_race_autodrive(void) {
         p = &gPlayers[me];
         cnt = gPathCountByPathIndex[gPlayerPathIndex];
         if (cnt != 0) {
-            TrackPathPoint* tp = &gTrackPaths[gPlayerPathIndex][(gNearestPathPointByPlayerId[me] + 6u) % cnt];
-            u16 tgt = atan2s(tp->posX - p->pos[0], tp->posZ - p->pos[2]);
-            s16 diff = (s16) (tgt - p->rotation[1]);
-            s32 steer = diff / 82; /* ~full stick at 11 degrees off-target — the old /328
-                                      * gain produced 7-8 on gentle curves, INSIDE the
-                                      * game deadzone (±12): autodrive karts never steered */
+            /* look ahead further the faster we go (4..12 path points) */
+            s32 ahead = 4 + (s32) (p->speed / 3.0f);
+            TrackPathPoint* tp;
+            u16 tgt;
+            s16 diff;
+            if (ahead > 12) {
+                ahead = 12;
+            }
+            tp = &gTrackPaths[gPlayerPathIndex][((u32) gNearestPathPointByPlayerId[me] + (u32) ahead) % cnt];
+            tgt = atan2s(tp->posX - p->pos[0], tp->posZ - p->pos[2]);
+            diff = (s16) (tgt - p->rotation[1]);
+
+            steer = diff / 60; /* ~full stick at 8 degrees off-target */
             if (steer > 75) {
                 steer = 75;
             }
             if (steer < -75) {
                 steer = -75;
             }
-            gControllers[0].rawStickX = (s8) steer;
+            /* deadzone compensation: never emit a correction the game ignores */
+            if (steer > 0 && steer < 14) {
+                steer = (diff > DEGREES(1)) ? 14 : 0;
+            }
+            if (steer < 0 && steer > -14) {
+                steer = (diff < -DEGREES(1)) ? -14 : 0;
+            }
+
+            /* corners: ease off the gas when well off-heading */
+            if (diff > DEGREES(35) || diff < -DEGREES(35)) {
+                wantA = (sRaceFrames & 3) != 0; /* 75% throttle pulse */
+            }
+            if (diff > DEGREES(70) || diff < -DEGREES(70)) {
+                wantA = (sRaceFrames & 1);      /* 50% while re-orienting */
+            }
+
+            /* pinned against a wall: throttle held but the kart barely moves */
+            if (wantA && p->speed < 1.0f) {
+                sAdStuck++;
+            } else if (p->speed > 3.0f) {
+                sAdStuck = 0;
+            }
+            if (sAdBackup == 0 && (sAdStuck > 45 ||
+                ((diff > DEGREES(100) || diff < -DEGREES(100)) && p->speed < 2.0f))) {
+                sAdBackup = 40; /* ~2/3s of reverse */
+                sAdStuck = 0;
+            }
+            if (sAdBackup != 0) {
+                sAdBackup--;
+                wantA = 0;
+                wantB = 1;
+                steer = (diff > 0) ? -75 : 75; /* reversing flips the steer sense */
+            }
         }
+
+        if (wantA) {
+            gControllers[0].button |= A_BUTTON;
+            gControllers[0].buttonPressed |= A_BUTTON;
+        }
+        if (wantB) {
+            gControllers[0].button |= B_BUTTON;
+        }
+        gControllers[0].rawStickX = (s8) steer;
+        sAdOverlayStick = (s8) steer; /* input overlay (drawn in cam_pop) */
+        sAdOverlayBtn = (u16) ((wantA ? A_BUTTON : 0) | (wantB ? B_BUTTON : 0));
 
         /* Scripted item use: when the local kart holds an item, press Z in a short
          * per-slot staggered window (so screenshots can catch each player's item
@@ -1744,6 +1807,49 @@ void net_lockstep_cam_pop(void) {
     D_800DC5EC->player = &gPlayers[0]; /* restore the renderer's player (segment culling) */
 
     sCamActive = 0;
+#endif
+}
+
+/* Test-build input overlay: draw the autodrive's injected inputs (stick bar +
+ * A/B lights) in the lower-left of the race view. Called from race_logic_loop
+ * right after cam_pop, while the master display list is still open. No-op in
+ * human/product builds (NET_DEMO_AUTODRIVE off) and outside online races. */
+void net_autodrive_overlay(void) {
+#if NET_DEMO_AUTODRIVE
+    extern Gfx* gDisplayListHead;
+    s32 cx;
+    if (!netpak_present() || !net_menu_online_active() || gGamestate != RACING) {
+        return;
+    }
+    gDPPipeSync(gDisplayListHead++);
+    gDPSetRenderMode(gDisplayListHead++, G_RM_OPA_SURF, G_RM_OPA_SURF2);
+    gDPSetCycleType(gDisplayListHead++, G_CYC_FILL);
+    /* stick bar: dark track, white center tick, yellow marker at stick pos */
+    gDPSetFillColor(gDisplayListHead++,
+                    (GPACK_RGBA5551(40, 40, 40, 1) << 16) | GPACK_RGBA5551(40, 40, 40, 1));
+    gDPFillRectangle(gDisplayListHead++, 16, 208, 116, 216);
+    gDPPipeSync(gDisplayListHead++);
+    gDPSetFillColor(gDisplayListHead++,
+                    (GPACK_RGBA5551(255, 255, 255, 1) << 16) | GPACK_RGBA5551(255, 255, 255, 1));
+    gDPFillRectangle(gDisplayListHead++, 65, 206, 67, 218);
+    gDPPipeSync(gDisplayListHead++);
+    cx = 66 + ((s32) sAdOverlayStick * 48) / 80;
+    gDPSetFillColor(gDisplayListHead++,
+                    (GPACK_RGBA5551(255, 220, 0, 1) << 16) | GPACK_RGBA5551(255, 220, 0, 1));
+    gDPFillRectangle(gDisplayListHead++, cx - 2, 207, cx + 2, 217);
+    gDPPipeSync(gDisplayListHead++);
+    /* A light (green when held), B light (red when held) */
+    gDPSetFillColor(gDisplayListHead++, (sAdOverlayBtn & A_BUTTON)
+                    ? ((GPACK_RGBA5551(0, 230, 0, 1) << 16) | GPACK_RGBA5551(0, 230, 0, 1))
+                    : ((GPACK_RGBA5551(20, 60, 20, 1) << 16) | GPACK_RGBA5551(20, 60, 20, 1)));
+    gDPFillRectangle(gDisplayListHead++, 122, 206, 134, 218);
+    gDPPipeSync(gDisplayListHead++);
+    gDPSetFillColor(gDisplayListHead++, (sAdOverlayBtn & B_BUTTON)
+                    ? ((GPACK_RGBA5551(230, 30, 30, 1) << 16) | GPACK_RGBA5551(230, 30, 30, 1))
+                    : ((GPACK_RGBA5551(60, 20, 20, 1) << 16) | GPACK_RGBA5551(60, 20, 20, 1)));
+    gDPFillRectangle(gDisplayListHead++, 138, 206, 150, 218);
+    gDPPipeSync(gDisplayListHead++);
+    gDPSetCycleType(gDisplayListHead++, G_CYC_1CYCLE);
 #endif
 }
 
