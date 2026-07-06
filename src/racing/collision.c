@@ -758,6 +758,23 @@ UNUSED s32 detect_tyre_collision(KartTyre* tyre) {
     // depending on which (if any) if statements were entered on the loop's last cycle
 }
 
+/* NetPak64 diag: per-kart surface-collision call counter. Which karts is the
+ * engine actually collision-testing against the track? (read + reset by
+ * net_render_cull_diag; index derived from the Collision* when it points
+ * into gPlayers[]) */
+extern u16 gNetColCnt[8]; /* lives in netbss (net_race.c) — adding .bss to the
+                           * racing overlay shifts the fragile memory layout
+                           * and kills boot (same class as the v13 linker trap) */
+static void net_col_count(Collision* c) {
+    extern Player gPlayers[];
+    u8* base = (u8*) &gPlayers[0].collision;
+    s32 stride = sizeof(Player);
+    s32 off = (s32) ((u8*) c - base);
+    if (off >= 0 && off < stride * 8 && (off % stride) == 0) {
+        gNetColCnt[off / stride]++;
+    }
+}
+
 s32 is_colliding_with_drivable_surface(Collision* collision, f32 boundingBoxSize, f32 newX, f32 newY, f32 newZ,
                                        u16 index, f32 oldX, f32 oldY, f32 oldZ) {
     CollisionTriangle* triangle = &gCollisionMesh[index];
@@ -779,6 +796,7 @@ s32 is_colliding_with_drivable_surface(Collision* collision, f32 boundingBoxSize
     f32 area3;
     s32 b = 1;
 
+    net_col_count(collision);
     if (triangle->minX > newX) {
         return 0;
     }

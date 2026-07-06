@@ -1277,9 +1277,23 @@ void net_lockstep_tick(void) {
      * the sim passes their last input frame L — same logical frame on every
      * console, and the CPU AI is deterministic, so the sim stays identical. */
     for (i = 0; i < np; i++) {
+        extern s16 D_801633F8[12];
         if (!sLsDropped[i]) {
             gPlayers[i].type = (gPlayers[i].type & ~(u32) PLAYER_CPU) | PLAYER_HUMAN;
         }
+        /* FULL PHYSICS ALWAYS for every online player's kart. The per-frame
+         * dispatcher (player_controller.c ~540) runs real kart physics —
+         * including TERRAIN COLLISION — only for karts visible to camera1,
+         * and downgrades the rest to control_cpu_movement, the rail-follower
+         * that never touches the collision mesh. camera1 is the sim camera
+         * (player 0's), so a joiner's kart got real physics only while near
+         * the host's kart: everywhere else it drove through walls and floors
+         * (identically on every console — detector green). Proven by per-kart
+         * collision counters: kart 0 = 32 tests/16 frames, karts 1-7 = 0.
+         * This flag is the engine's own override (split-screen humans are
+         * simply always visible on their own screen); deterministic because
+         * it's set from the same roster on every console. */
+        D_801633F8[i] = 1;
         /* dropped slots: type is set in the READY branch as a pure function of the
          * logical frame df (CPU iff df > L) — deciding it here, at tick time, raced
          * against DROP-message arrival: a receiver whose gate unblocked in the same
@@ -2129,6 +2143,7 @@ void net_lockstep_cam_pop(void) {
 }
 
 s16 gNetCullSection; /* written by render_courses.c: last course chunk drawn */
+u16 gNetColCnt[8];   /* written by collision.c: surface-collision tests per kart */
 
 /* TEMP #31 render diag: which course chunk the renderer chose vs the section
  * the LOCAL kart is actually in. Persistent mismatch = the joiner's 'drives
@@ -2162,6 +2177,15 @@ void net_render_cull_diag(void) {
         /* local kart trail (kartplot.py-compatible tags) */
         netpak_debug_poke(((0x80u + (u32) ls) << 24) | (u16) (s16) gPlayers[ls].pos[0]);
         netpak_debug_poke(((0x90u + (u32) ls) << 24) | (u16) (s16) gPlayers[ls].pos[2]);
+        { /* 0xE0+k: surface-collision tests per kart since last poke — which
+           * karts does the engine actually collision-test against the track? */
+            extern u16 gNetColCnt[8];
+            s32 ck;
+            for (ck = 0; ck < 8; ck++) {
+                netpak_debug_poke(((0xE0u + (u32) ck) << 24) | gNetColCnt[ck]);
+                gNetColCnt[ck] = 0;
+            }
+        }
     }
 #endif
 }
