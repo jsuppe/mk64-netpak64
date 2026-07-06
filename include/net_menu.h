@@ -14,7 +14,7 @@
 
 /** Build number shown on the title screen ("JSUPPE VERSION N") so a stale ROM
  *  is obvious at a glance. BUMP THIS every time a new ROM is handed out. */
-#define NETPAK_ROM_VERSION 36
+#define NETPAK_ROM_VERSION 37
 
 /** Enter the online screen fresh (called when NETWORK_VS_MENU is set up). */
 void net_menu_reset(void);
@@ -33,6 +33,8 @@ const char* net_menu_slot_name(s32 slot);
 bool net_menu_is_host(void);
 void net_menu_send_course(s32 courseId);
 bool net_menu_poll_course(void);
+void net_menu_set_coursewait(bool on);
+void net_online_coursewait_render(void);
 
 /** True while an online race is being set up — course_select_menu_act then
  * auto-drives the real CUP->COURSE->OK->launch flow with the course pre-locked,

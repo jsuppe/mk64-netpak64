@@ -2399,6 +2399,7 @@ void func_80094A64(struct GfxPool* pool) {
             handle_menus_default();
             func_80099AEC();
             net_online_barrier_render(); // NetPak64: "waiting for all players" popup
+            net_online_coursewait_render(); // NetPak64: joiner waits while host picks
             break;
         case NETWORK_VS_MENU: // NetPak64 online screen
             handle_menus_default();

@@ -493,6 +493,34 @@ bool net_online_barrier_ready(void) {
 
 /* Popup drawn over the map screen while waiting at the start barrier. A dark
  * fill panel sits behind the text so it's readable over the busy map preview. */
+static bool sCourseWait; /* joiner parked at the course screen, host picking */
+
+void net_menu_set_coursewait(bool on) {
+    sCourseWait = on;
+}
+
+/* Popup over the course-select screen while the HOST browses: joiners are
+ * input-locked there (v32), so say why. Same styling as the start barrier. */
+void net_online_coursewait_render(void) {
+    if (!sCourseWait) {
+        return;
+    }
+    gDPPipeSync(gDisplayListHead++);
+    gDPSetRenderMode(gDisplayListHead++, G_RM_OPA_SURF, G_RM_OPA_SURF2);
+    gDPSetCycleType(gDisplayListHead++, G_CYC_FILL);
+    gDPSetFillColor(gDisplayListHead++,
+                    (GPACK_RGBA5551(0, 0, 0, 1) << 16) | GPACK_RGBA5551(0, 0, 0, 1));
+    gDPFillRectangle(gDisplayListHead++, 66, 90, 254, 168);
+    gDPPipeSync(gDisplayListHead++);
+    gDPSetCycleType(gDisplayListHead++, G_CYC_1CYCLE);
+
+    set_text_color(TEXT_GREEN);
+    print_text1_center_mode_1(0xA0, 0x66, "WAITING FOR", 0, 1.0f, 1.0f);
+    print_text1_center_mode_1(0xA0, 0x7C, "HOST", 0, 1.0f, 1.0f);
+    set_text_color(TEXT_YELLOW);
+    print_text1_center_mode_1(0xA0, 0x9A, "CHOOSING COURSE", 0, 0.75f, 0.8f);
+}
+
 void net_online_barrier_render(void) {
     if (!sBarrierWaiting) {
         return;

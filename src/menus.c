@@ -1752,8 +1752,10 @@ void course_select_menu_act(struct Controller* arg0, u16 controllerIdx) {
          * the host's pick, then the auto-drive below walks to the OK state. */
         btnAndStick = 0;
         if (!net_menu_poll_course()) {
+            net_menu_set_coursewait(true); /* popup: WAITING FOR HOST */
             goto online_host_interactive; /* course unknown: idle this frame */
         }
+        net_menu_set_coursewait(false);
         hostCourse = net_menu_online_course();
         if (!sOnlineLocked) {
             /* Race as "cup race 1" (index 0) so the GP path picks CPU characters
