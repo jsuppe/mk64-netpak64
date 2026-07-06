@@ -29,6 +29,7 @@ void net_menu_render(void);
  * (from func_80094A64's START_MENU case). */
 void net_menu_render_version(void);
 bool net_menu_version_mismatch(u8* peerVer);
+const char* net_menu_slot_name(s32 slot);
 
 /** True while an online race is being set up — course_select_menu_act then
  * auto-drives the real CUP->COURSE->OK->launch flow with the course pre-locked,

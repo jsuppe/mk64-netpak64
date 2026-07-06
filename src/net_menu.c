@@ -507,6 +507,25 @@ void net_online_barrier_render(void) {
     }
 }
 
+/* Name of the ONLINE player in kart slot `slot`, or NULL when offline / not
+ * a human seat (CPU fill). slot == node id in lockstep races. Used by the
+ * post-race standings so rows read JSUPPE / ALICE instead of MARIO / LUIGI. */
+const char* net_menu_slot_name(s32 slot) {
+    s32 i;
+    if (!net_menu_online_active() || slot < 0 || slot >= net_menu_player_count()) {
+        return NULL;
+    }
+    if (slot == sNodeId) {
+        return (sName[0] != '\0' && sName[0] != ' ') ? sName : NULL;
+    }
+    for (i = 0; i < sPeerCount; i++) {
+        if (sPeers[i].node_id == (u8) slot && sPeers[i].name[0] != '\0') {
+            return sPeers[i].name;
+        }
+    }
+    return NULL;
+}
+
 void net_menu_reset(void) {
     s32 i;
     sState = OM_MAIN;

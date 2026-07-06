@@ -60,6 +60,7 @@ extern void osSyncPrintf(const char* fmt, ...); /* declared in PR/os.h (not via 
  * NP64_TRACE_IO. */
 #define NET_MENU_TEST 0
 #define NET_DETECTOR_SELFTEST 0 /* 1 = poison one sim mid-race to prove 0x7D fires */
+#define NET_ITEM_PROBE 0        /* 1 = per-console item grants (DIVERGENT by design) */ /* 1 = poison one sim mid-race to prove 0x7D fires */
 /* NET_DIAG: keep the render/position forensics pokes in HUMAN builds so a
  * player's own session (launcher sets NP64_TRACE_IO=1) captures the evidence
  * for on-device-only defects. Pokes are single register writes — negligible
@@ -1251,6 +1252,9 @@ void net_lockstep_tick(void) {
         return;
     }
 #if NET_MENU_TEST && NET_DEMO_AUTODRIVE
+#if NET_ITEM_PROBE /* OFF by default: each console grants to a DIFFERENT slot
+    -> deliberately divergent -> latches the (now working) detector at ~df 860.
+    This probe is what desynced every test race since it was added. */
     /* ITEM-CHAIN probe: every ~300 ticks, simulate an item-box hit for MY
      * slot (the exact call the box makes) and trace the chain:
      * 0xA8 = grant attempt (slot | window obj state), 0xA9 = window's
@@ -1277,6 +1281,7 @@ void net_lockstep_tick(void) {
             }
         }
     }
+#endif /* NET_ITEM_PROBE */
 
     /* DETECTOR SELF-TEST (NET_DETECTOR_SELFTEST=1 only): node 1 deliberately
      * poisons its own sim at tick 2500 (speed nudge). The detector MUST latch

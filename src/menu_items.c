@@ -7239,7 +7239,11 @@ void func_800A32B4(s32 arg0, s32 arg1, s32 characterId, s32 rank) {
     sp3C[2] = '.';
     sp3C[3] = '\0';
     func_800939C8(arg0 - 1, arg1, &sp3C[1], -4, 0.7f, 0.7f);
-    print_text_mode_1(arg0 + 0xA, arg1, D_800E76A8[characterId], 0, 0.65f, 0.7f);
+    { /* NetPak64: online rows show the PLAYER's name, not the character */
+        extern const char* net_menu_slot_name(s32);
+        const char* nm = net_menu_slot_name(gGPCurrentRacePlayerIdByRank[rank]);
+        print_text_mode_1(arg0 + 0xA, arg1, nm != NULL ? (char*) nm : D_800E76A8[characterId], 0, 0.65f, 0.7f);
+    }
     convert_number_to_ascii((s32) (sp50 / 60.0f), sp3C);
     func_800939C8(arg0 + 0x42, arg1, sp3C, 0, 0.7f, 0.7f);
     convert_number_to_ascii((s32) sp50 % 60, sp3C);
@@ -7397,7 +7401,11 @@ void func_800A3ADC(MenuItem* arg0, s32 arg1, s32 arg2, s32 characterId, s32 arg4
     sp34[2] = '.';
     sp34[3] = '\0';
     func_800939C8(arg1, arg2, &sp34[1], -4, 0.7f, 0.7f);
-    print_text_mode_1(arg1 + 0xA, arg2, D_800E76A8[characterId], 0, 0.7f, 0.7f);
+    { /* NetPak64: GP points table rows too (character -> owning player) */
+        extern const char* net_menu_slot_name(s32);
+        const char* nm = net_menu_slot_name(gGetPlayerByCharacterId[characterId]);
+        print_text_mode_1(arg1 + 0xA, arg2, nm != NULL ? (char*) nm : D_800E76A8[characterId], 0, 0.7f, 0.7f);
+    }
     convert_number_to_ascii(gGPPointsByCharacterId[characterId], sp34);
     func_800939C8(arg1 + 0x47, arg2, sp34, 0, 0.7f, 0.7f);
     if ((arg4 < ARRAY_COUNT(gGPPointRewards)) && (arg0->state < 9)) {
