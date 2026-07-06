@@ -4204,10 +4204,11 @@ MenuTexture seg2_game_select_texture[2] = {
  * @brief MenuTexture for the first colone one player
  *
  */
-MenuTexture seg2_menu_1p_column[4] = {
+MenuTexture seg2_menu_1p_column[5] = {
     { 1, texture_menu_1p_game, 64, 54, 0, 0, 0x0, 0 },
     { 1, texture_mode_mario_gp, 64, 18, 0, 65, 0x0, 0 },
     { 1, texture_mode_time_trials, 64, 18, 0, 83, 0x0, 0 },
+    { 2, texture_mode_online, 64, 18, 0, 101, 0x900, 0 }, /* NetPak64: type 2 = raw rgba16 */
     { 0, NULL, 0, 0, 0, 0, 0, 0 },
 };
 

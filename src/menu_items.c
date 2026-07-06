@@ -3607,6 +3607,21 @@ void load_menu_img_comp_type(MenuTexture* addr, s32 compType) {
             if (size % 8) {
                 size = ((size / 8) * 8) + 8;
             }
+            if (texAddr->type == 2) {
+                /* NetPak64: raw rgba16 blob - no tkmk00 encoder exists for new
+                 * art, so custom panels ship uncompressed and DMA straight
+                 * into the texture buffer. */
+                dma_tkmk00_textures(texAddr->textureData,
+                                    (u32) (texAddr->height * texAddr->width) * 2,
+                                    &gMenuTextureBuffer[sMenuTextureBufferIndex]);
+                texMap[sMenuTextureEntries].textureData = texAddr->textureData;
+                texMap[sMenuTextureEntries].offset = sMenuTextureBufferIndex;
+                sMenuTextureBufferIndex += texAddr->height * texAddr->width;
+                sMenuTextureBufferIndex = ((sMenuTextureBufferIndex / 8) * 8) + 8;
+                sMenuTextureEntries += 1;
+                texAddr++;
+                continue;
+            }
             switch (compType) {
                 case LOAD_MENU_IMG_MIO0_ONCE:
                 case LOAD_MENU_IMG_MIO0_FORCE:

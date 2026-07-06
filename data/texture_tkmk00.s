@@ -177,6 +177,10 @@ glabel texture_mode_mario_gp
 .incbin "bin/texture_mode_mario_gp.rgba16.tkmk00"
 glabel texture_mode_mario_gp_end
 
+glabel texture_mode_online  # NetPak64: RAW rgba16 (no tkmk00 encoder exists); MenuTexture type 2
+.incbin "bin/texture_mode_online.rgba16.bin"
+glabel texture_mode_online_end
+
 glabel texture_mode_vs
 .incbin "bin/texture_mode_vs.rgba16.tkmk00"
 glabel texture_mode_vs_end

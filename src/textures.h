@@ -493,7 +493,7 @@ extern MenuTexture seg2_copyright_1996_texture[2];
 extern MenuTexture seg2_push_start_button_texture[2];
 extern MenuTexture D_02004638[2];
 extern MenuTexture seg2_game_select_texture[2];
-extern MenuTexture seg2_menu_1p_column[4];
+extern MenuTexture seg2_menu_1p_column[5];
 extern MenuTexture seg2_menu_2p_column[5];
 extern MenuTexture seg2_menu_3p_column[4];
 extern MenuTexture seg2_menu_4p_column[4];
@@ -1186,6 +1186,7 @@ extern u64 texture_l_option[];
 extern u64 texture_mode_battle[];
 extern u64 texture_mode_mario_gp[];
 extern u64 texture_mode_time_trials[];
+extern u64 texture_mode_online[]; /* NetPak64: raw rgba16 menu panel */
 extern u64 texture_mode_vs[];
 extern u64 gTextureMenuMushroomCup[];
 extern u64 texture_ok[];
