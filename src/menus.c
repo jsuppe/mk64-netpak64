@@ -115,7 +115,7 @@ const s8 gPlayerModeSelection[] = { 2, 2, 1, 1 }; // 1p bound 1->2 for the ONLIN
 
 // Limit for each index column in one-two-three-four mode selection
 const s8 sGameModePlayerColumnDefault[][3] = {
-    { 2, 1, 0 }, // 1p (GP options, TT options, ...)
+    { 2, 1, 2 }, // 1p (GP options, TT options, ONLINE 50/100/150cc)
     { 2, 2, 0 }, // 2p (GP options, VS options, Battle)
     { 2, 0, 0 }, // 3p (VS options, Battle, ...)
     { 2, 0, 0 }, // 4p (VS options, Battle, ...)
@@ -124,7 +124,7 @@ const s8 sGameModePlayerColumnDefault[][3] = {
 // Limit for each index column in one-two-three-four mode selection
 // for extra mode (mirror mode), hence the extra value (3 instead of 2)
 const s8 sGameModePlayerColumnExtra[][3] = {
-    { 3, 1, 0 }, // 1p (GP options, TT options, ...)
+    { 3, 1, 2 }, // 1p (GP, TT, ONLINE: no EXTRA class online)
     { 3, 3, 0 }, // 2p (GP options, VS options, Battle)
     { 3, 0, 0 }, // 3p (VS options, Battle, ...)
     { 3, 0, 0 }, // 4p (VS options, Battle, ...)
@@ -1384,8 +1384,9 @@ void main_menu_act(struct Controller* controller, u16 controllerIdx) {
                             gMainMenuSelection = MAIN_MENU_OK_SELECT;
                             play_sound2(SOUND_MENU_BATTLE);
                             break;
-                        case ONLINE: // NetPak64: go straight to the online screen
-                            func_online_fade();
+                        case ONLINE: /* NetPak64: class first, with the real
+                                        animated CC sub-menu (user request) */
+                            gMainMenuSelection = MAIN_MENU_MODE_SUB_SELECT;
                             play_sound2(SOUND_MENU_VERSUS);
                             break;
                     }
@@ -1443,7 +1444,14 @@ void main_menu_act(struct Controller* controller, u16 controllerIdx) {
                 } 
                 if (btnAndStick & A_BUTTON) {
                     reset_cycle_flash_menu();
-                    if ((gPlayerCount == 1) && ((gGameModeMenuColumn - 1)[gPlayerCount] == 1) && (subMode == 1)) {
+                    if (gGameModePlayerSelection[gPlayerCount - 1][gGameModeMenuColumn[gPlayerCount - 1]] == ONLINE) {
+                        /* NetPak64: class chosen with the vanilla animated
+                         * sub-menu; carry it into the online lobby */
+                        gCCSelection = subMode;
+                        gIsMirrorMode = 0;
+                        func_online_fade();
+                        play_sound2(SOUND_MENU_VERSUS);
+                    } else if ((gPlayerCount == 1) && ((gGameModeMenuColumn - 1)[gPlayerCount] == 1) && (subMode == 1)) {
                         func_8009E258();
                         play_sound2(SOUND_MENU_DATA);
                     } else {

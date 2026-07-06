@@ -42,7 +42,7 @@ static const char kCodeAlphabet[] = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 /* Player-name alphabet: leading space = "blank" slot (trimmed on save), then
  * the full font set that reads well at roster size. Names are what the other
  * players see in the lobby (relay identity, netpak_set_name). */
-static const char kNameAlphabet[] = " ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-";
+static const char kNameAlphabet[] = " ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-.";
 #define NAME_LEN 8
 
 /* The 16 selectable race courses, in the stock cup order (Mushroom / Flower /
@@ -540,6 +540,9 @@ void net_menu_reset(void) {
     s32 i;
     sState = OM_MAIN;
     sVerMismatch = 0; /* fresh session, fresh cross-check */
+    /* class picked on the game-select sub-menu (v27) seeds the lobby; the
+     * lobby U/D still allows changing it before START */
+    sCcSel = (gCCSelection >= CC_50 && gCCSelection <= CC_150) ? gCCSelection : CC_100;
     sSel = 0;
     sEntryPos = 0;
     sNodeId = -1;
@@ -1062,11 +1065,14 @@ void net_menu_render(void) {
             set_text_color(TEXT_GREEN);
             print_text1_center_mode_1(0xA0, 0x64, "ENTER NAME", 0, 0.8f, 0.8f);
             for (i = 0; i < NAME_LEN; i++) {
-                /* blank slots draw as a dot so the cursor has somewhere to be */
-                ch[0] = (sName[i] == ' ') ? '.' : sName[i];
-                set_text_color(i == sNamePos ? TEXT_BLUE_GREEN_RED_CYCLE_1
-                               : (sName[i] == ' ') ? TEXT_RED
-                                                   : TEXT_YELLOW);
+                /* blank slots stay blank ('.' is a real name character now);
+                 * the cursor shows a dash caret when it sits on a blank */
+                if (sName[i] == ' ') {
+                    ch[0] = (i == sNamePos) ? '-' : ' ';
+                } else {
+                    ch[0] = sName[i];
+                }
+                set_text_color(i == sNamePos ? TEXT_BLUE_GREEN_RED_CYCLE_1 : TEXT_YELLOW);
                 /* NAME_LEN chars centered at x=0xA0, 0x14 px pitch */
                 print_text_mode_1(0x50 + i * 0x14, 0x82, ch, 0, 1.2f, 1.2f);
             }

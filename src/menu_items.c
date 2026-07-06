@@ -6055,6 +6055,7 @@ void render_menus(MenuItem* arg0) {
                         switch (var_v1) {
                             case 0:
                             case 2:
+                            case 4: /* NetPak64 ONLINE: CC panels here too */
                                 break;
                             default:
                                 var_a1 = -1;
