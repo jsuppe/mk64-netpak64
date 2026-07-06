@@ -1716,6 +1716,36 @@ void course_select_menu_act(struct Controller* arg0, u16 controllerIdx) {
         static s32 sOnlinePhase;
         static s32 sOnlineLocked;
         s32 hostCourse = net_menu_online_course();
+
+        if (net_menu_is_host()) {
+            /* v32: the HOST picks on the REAL course-select screen. Vanilla
+             * navigation stays live (B swallowed: no backing out of an online
+             * start). On reaching the map/OK sub-state the pick is final:
+             * broadcast it, then hold at the barrier as before. */
+            btnAndStick &= ~B_BUTTON;
+            if (gSubMenuSelection == SUB_MENU_MAP_SELECT_OK) {
+                static s32 sCourseTx;
+                if ((sCourseTx++ & 31) == 0) {
+                    net_menu_send_course(gCurrentCourseId); /* repeat-safe */
+                }
+                if (net_online_barrier_ready()) {
+                    btnAndStick |= A_BUTTON;
+                    net_menu_online_clear();
+                    sOnlineLocked = 0;
+                }
+                /* GP cup bookkeeping: race as cup slot 0 for grid/CPU init */
+                gCourseIndexInCup = 0;
+            }
+            goto online_host_interactive;
+        }
+
+        /* JOINER: fully spectating this screen. Swallow every input; wait for
+         * the host's pick, then the auto-drive below walks to the OK state. */
+        btnAndStick = 0;
+        if (!net_menu_poll_course()) {
+            goto online_host_interactive; /* course unknown: idle this frame */
+        }
+        hostCourse = net_menu_online_course();
         if (!sOnlineLocked) {
             /* Race as "cup race 1" (index 0) so the GP path picks CPU characters
              * and lays out the grid; the actual track is forced below. */
@@ -1747,6 +1777,7 @@ void course_select_menu_act(struct Controller* arg0, u16 controllerIdx) {
         }
     }
 
+online_host_interactive:
     if (!is_screen_being_faded()) {
         switch (gSubMenuSelection) {
             case SUB_MENU_MAP_SELECT_CUP:
@@ -1771,7 +1802,9 @@ void course_select_menu_act(struct Controller* arg0, u16 controllerIdx) {
                     func_8009E208();
                     play_sound2(SOUND_MENU_GO_BACK);
                 } else if ((btnAndStick & A_BUTTON) != 0) {
-                    if (gModeSelection != GRAND_PRIX) {
+                    if (gModeSelection != GRAND_PRIX ||
+                        (net_menu_online_pending() && net_menu_is_host())) {
+                        /* online host picks a specific course, not just a cup */
                         gSubMenuSelection = SUB_MENU_MAP_SELECT_COURSE;
                         play_sound2(SOUND_MENU_SELECT);
                     } else {

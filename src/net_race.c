@@ -145,11 +145,21 @@ static void net_race_menu_test(void) {
             }
             break;
         }
-        case 13: /* COURSE_SELECT_MENU */
+        case 13: { /* COURSE_SELECT_MENU */
 #if NET_DETERMINISM_TEST
             press = A_BUTTON;                     /* GP: cup -> OK -> launch */
+#else
+            /* v32: the online HOST navigates the real course screen; press A
+             * on alternate ticks (edges) to confirm cup 0 -> course 1 -> OK.
+             * Joiners' inputs are swallowed by the spectate lock, so pressing
+             * here is harmless for them. */
+            static s32 csGap;
+            if ((csGap++ & 15) == 0) {
+                press = A_BUTTON;
+            }
 #endif
             break;
+        }
         case NETWORK_VS_MENU: { /* join the preset room, then START. Instances still
                                  * carrying the default identity ("player") first walk
                                  * the NAME editor — exercises rename end-to-end without

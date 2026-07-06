@@ -80,6 +80,8 @@ static const OnlineCourse kCourses[] = {
 #define OLMSG_START 1 /* host -> peers: leave the lobby, load this course */
 #define OLMSG_READY 2 /* player -> host: driver picked, I'm at the start barrier */
 #define OLMSG_GO    3 /* host -> peers: everyone's ready, launch the race now */
+#define OLMSG_COURSE 4 /* host -> peers: course picked on the REAL course-select
+                        * screen (v32: course chosen AFTER char select) */
 typedef struct {
     u8 tag;      /* OLMSG_TAG */
     u8 type;     /* OLMSG_* */
@@ -198,7 +200,8 @@ static void net_menu_start_race(void) {
     gIsMirrorMode = 0;
     gDemoMode = DEMO_MODE_INACTIVE; /* human drives slot 0, not AI */
     gDemoUseController = 0;
-    gCurrentCourseId = sOnlineCourse;
+    gCurrentCourseId = (sOnlineCourse != 0xFF) ? sOnlineCourse : 0; /* placeholder
+        until the course-select screen decides (v32) */
     sOnlineArmed = true;   /* course_select_menu_act auto-locks this course */
     sOnlineActive = true;  /* gate the in-race netcode to this online race only */
     func_online_start_fade(); /* -> CHARACTER_SELECT_MENU */
@@ -535,6 +538,45 @@ const char* net_menu_slot_name(s32 slot) {
     return NULL;
 }
 
+bool net_menu_is_host(void) {
+    return sIsHost;
+}
+
+/* Host: broadcast the course chosen on the course-select screen (repeat-safe;
+ * joiners latch the first one). */
+void net_menu_send_course(s32 courseId) {
+    OnlineMsg m;
+    s32 ci;
+    sOnlineCourse = (u8) courseId;
+    m.tag = OLMSG_TAG;
+    m.type = OLMSG_COURSE;
+    m.course = (u8) courseId;
+    m.pad = (u8) NETPAK_ROM_VERSION;
+    for (ci = 0; ci < 8; ci++) {
+        m.chars[ci] = 0;
+    }
+    m.chars[0] = (u8) sOnlineCc;
+    online_msg_send_all(&m);
+}
+
+/* Joiner waiting at the course screen: poll ch1 for the host's course pick.
+ * Returns true once known (sOnlineCourse valid). */
+bool net_menu_poll_course(void) {
+    static netpak_pkt_t pkt;
+    if (sOnlineCourse != 0xFF) {
+        return true;
+    }
+    while (netpak_recv(&pkt) == 0) {
+        if (pkt.ch == 1 && pkt.len >= (u16) sizeof(OnlineMsg) && pkt.data[0] == OLMSG_TAG &&
+            pkt.data[1] == OLMSG_COURSE) {
+            net_menu_check_ver(pkt.data[3]);
+            sOnlineCourse = pkt.data[2];
+            return true;
+        }
+    }
+    return false;
+}
+
 void net_menu_reset(void) {
     s32 i;
     sState = OM_MAIN;
@@ -706,14 +748,6 @@ void net_menu_update(struct Controller* controller) {
                     sPeerCount = n;
                 }
             }
-            if (btn & R_JPAD) {
-                sCourseSel = (sCourseSel + 1) % NUM_ONLINE_COURSES;
-                play_sound2(SOUND_MENU_CURSOR_MOVE);
-            }
-            if (btn & L_JPAD) {
-                sCourseSel = (sCourseSel + NUM_ONLINE_COURSES - 1) % NUM_ONLINE_COURSES;
-                play_sound2(SOUND_MENU_CURSOR_MOVE);
-            }
             if (btn & B_BUTTON) {
                 netpak_session_leave();
                 sState = OM_MAIN;
@@ -723,7 +757,7 @@ void net_menu_update(struct Controller* controller) {
                 OnlineMsg m;
                 s32 ci;
                 net_online_barrier_arm_host(); /* refresh roster, wait for these peers */
-                sOnlineCourse = kCourses[sCourseSel].id;
+                sOnlineCourse = 0xFF; /* v32: course picked on the REAL course-select screen */
                 sOnlineCc = sCcSel;
                 m.tag = OLMSG_TAG;
                 m.type = OLMSG_START;
@@ -779,7 +813,7 @@ void net_menu_update(struct Controller* controller) {
                 if (pkt.ch == 1 && pkt.len >= (u16)sizeof(OnlineMsg) &&
                     pkt.data[0] == OLMSG_TAG && pkt.data[1] == OLMSG_START) {
                     net_menu_check_ver(pkt.data[3]);
-                    sOnlineCourse = pkt.data[2];
+                    sOnlineCourse = pkt.data[2]; /* 0xFF = host picks on the course screen */
                     sOnlineCc = (pkt.data[4] <= CC_150) ? pkt.data[4] : CC_100;
                     net_online_barrier_arm_joiner(pkt.src); /* host node id from START */
                     net_menu_start_race(); /* same track as the host */
@@ -1016,11 +1050,9 @@ void net_menu_render(void) {
 
             if (sState == OM_HOSTING) { /* host chooses the track for the room */
                 set_text_color(TEXT_GREEN);
-                print_text1_center_mode_1(0xA0, 0xB4, "COURSE", 0, 0.7f, 0.7f);
-                set_text_color(TEXT_BLUE_GREEN_RED_CYCLE_1);
-                print_text1_center_mode_1(0xA0, 0xC2, (char*)kCourses[sCourseSel].name, 0, 0.8f, 0.8f);
                 set_text_color(TEXT_YELLOW);
-                print_text1_center_mode_1(0xA0, 0xD4, "L/R COURSE  START BEGIN", 0, 0.55f, 0.55f);
+                print_text1_center_mode_1(0xA0, 0xC8, "START  BEGIN", 0, 0.7f, 0.7f);
+                print_text1_center_mode_1(0xA0, 0xD8, "COURSE IS PICKED ON THE NEXT SCREEN", 0, 0.45f, 0.5f);
             } else { /* joiner waits for the host to pick + start */
                 set_text_color(TEXT_YELLOW);
                 print_text1_center_mode_1(0xA0, 0xC0, "WAITING FOR HOST", 0, 0.7f, 0.7f);
