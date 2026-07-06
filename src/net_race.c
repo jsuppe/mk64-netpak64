@@ -2308,8 +2308,19 @@ static u16 sDiagCamDist;
 
 void net_lockstep_cam_pop(void) {
 #if NET_LOCKSTEP
+    extern Camera* gCopyCamera[4];
     u32 blk;
     s32 pi;
+
+    /* AUDIO LISTENER: the sound engine pans/attenuates against
+     * gCopyCamera[0], which normally aliases camera1 — the SIM camera, i.e.
+     * the HOST's view. On a joiner, re-point it at our persistent local
+     * camera so engine/doppler/pan follow OUR kart ("the joiner seems to be
+     * listening to the host's audio"). Menus reset the pointer to camera1
+     * (func_800C2474), so refresh every frame during the race. */
+    if (net_lockstep_local_slot() != 0 && sCamLocInit) {
+        gCopyCamera[0] = &sCamLoc1;
+    }
 
 #if NET_MENU_TEST || NET_DIAG
     { /* sample the LOCAL view camera before restoring the sim's (0xDF poke
