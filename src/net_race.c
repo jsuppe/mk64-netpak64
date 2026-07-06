@@ -125,7 +125,9 @@ static void net_race_menu_test(void) {
             } else if (gMainMenuSelection == 5) { /* MODE_SUB_SELECT: the CC
                     class sub-menu ONLINE now routes through (v27) — confirm
                     the default 50cc and continue to the online screen */
-                press = A_BUTTON;
+                static s32 dwell3;
+                if (dwell3++ < 90) { press = 0; } /* brief dwell for capture */
+                else { press = A_BUTTON; }
             }
 #endif
             break;

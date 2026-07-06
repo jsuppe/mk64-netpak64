@@ -9727,7 +9727,8 @@ void func_800A9E58(MenuItem* arg0) {
                 case MAIN_MENU_OK_SELECT:               /* switch 3 */
                 case MAIN_MENU_OK_SELECT_GO_BACK:       /* switch 3 */
                 case MAIN_MENU_MODE_SUB_SELECT_GO_BACK: /* switch 3 */
-                    if ((temp_a1 != sp20) && (temp_a1 != sp1C)) {
+                    if ((temp_a1 != sp20) && (temp_a1 != sp1C) &&
+                        !(arg0->type >= 18 && arg0->type <= 20 && temp_a1 == 4)) { /* NetPak64: CC panels live for ONLINE */
                         arg0->visible = 0;
                         arg0->state = 0;
                     } else {
@@ -9758,7 +9759,8 @@ void func_800A9E58(MenuItem* arg0) {
                 case MAIN_MENU_OK_SELECT:               /* switch 4 */
                 case MAIN_MENU_OK_SELECT_GO_BACK:       /* switch 4 */
                 case MAIN_MENU_MODE_SUB_SELECT_GO_BACK: /* switch 4 */
-                    if ((temp_a1 != sp20) && (temp_a1 != sp1C)) {
+                    if ((temp_a1 != sp20) && (temp_a1 != sp1C) &&
+                        !(arg0->type >= 18 && arg0->type <= 20 && temp_a1 == 4)) { /* NetPak64: CC panels live for ONLINE */
                         arg0->visible = 0;
                         arg0->state = 0;
                     } else {
