@@ -3607,7 +3607,7 @@ void load_menu_img_comp_type(MenuTexture* addr, s32 compType) {
             if (size % 8) {
                 size = ((size / 8) * 8) + 8;
             }
-            if (texAddr->type == 2) {
+            if (texAddr->type == 0x102) {
                 /* NetPak64: raw rgba16 blob - no tkmk00 encoder exists for new
                  * art, so custom panels ship uncompressed and DMA straight
                  * into the texture buffer. */
