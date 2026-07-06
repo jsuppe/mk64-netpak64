@@ -995,6 +995,17 @@ void init_hud_one_player(void) {
     find_unused_obj_index(&gIndexLakituList[1]);
     find_unused_obj_index(&gItemWindowObjectByPlayerId[0]);
     find_unused_obj_index(&gItemWindowObjectByPlayerId[1]);
+    { /* NetPak64: online players need live item windows too — a grant on an
+         uninitialized window object silently no-ops (joiners broke item
+         boxes and received nothing). Allocate the remaining slots (array
+         holds 4) so up to 4 online players get the full item system; runs
+         identically on every console, so object indices stay in lockstep. */
+        extern s32 net_menu_online_active(void);
+        if (net_menu_online_active()) {
+            find_unused_obj_index(&gItemWindowObjectByPlayerId[2]);
+            find_unused_obj_index(&gItemWindowObjectByPlayerId[3]);
+        }
+    }
     init_object_list_index();
     course_init_cloud();
     course_init_cloud();
@@ -1024,6 +1035,14 @@ void init_hud_one_player(void) {
     // permuter magic
     why = 0x000000A0;
     init_item_window(gItemWindowObjectByPlayerId[0]);
+    { /* NetPak64: initialize the online players' windows as well */
+        extern s32 net_menu_online_active(void);
+        if (net_menu_online_active()) {
+            init_item_window(gItemWindowObjectByPlayerId[1]);
+            init_item_window(gItemWindowObjectByPlayerId[2]);
+            init_item_window(gItemWindowObjectByPlayerId[3]);
+        }
+    }
     for (someIndex = 0, something = 35.0f; someIndex < 8; someIndex++, something += 32.0) {
         D_8018D0C8[someIndex] = 40.0f;
         D_8018D028[someIndex] = -24.0f;

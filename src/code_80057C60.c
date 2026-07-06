@@ -1369,7 +1369,11 @@ void func_80059D00(void) {
                     if (!gDemoMode) {
                         func_8007AA44(0);
                     }
-                    course_update_clouds(0);
+                    { /* NetPak64: joiner's background must scroll with the
+                         LOCAL view camera, not the sim camera (no-op offline) */
+                        extern void net_course_update_clouds_screen0(void);
+                        net_course_update_clouds_screen0();
+                    }
                     if (playerHUD[PLAYER_ONE].raceCompleteBool == 0) {
                         func_8005C360((gPlayerOneCopy->speed / 18.0f) * 216.0f);
                     }

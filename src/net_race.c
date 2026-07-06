@@ -1247,7 +1247,8 @@ void net_lockstep_tick(void) {
     {
         static u32 sPjTick, sPjPaused;
         sPjTick++;
-        if (me == 0 && sPjTick == 900) {
+        if (me == 1 && sPjTick == 900) { /* the JOINER pauses: exercises the
+                 pause-owner clamp (owner index 2 reads a frozen ring slot) */
             gControllers[0].button |= START_BUTTON; /* captured + broadcast below */
             netpak_debug_poke(0xA5000900u);
         }
@@ -1506,6 +1507,13 @@ void net_lockstep_tick(void) {
 #if NET_PAUSE_SYNC
     if (gIsGamePaused != 0) {
         static u32 holdTick;
+        /* The vanilla pause menu reads the PAUSER's controller
+         * (gIsGamePaused-1). Online, that can be a ring-fed slot frozen by
+         * the pause itself -> menu dead on EVERY console. Clamp the owner to
+         * slot 0 so each console's menu runs on its own local pad. */
+        if (gIsGamePaused != 1) {
+            gIsGamePaused = 1;
+        }
         if ((holdTick++ & 31) == 0) {
             u32 hold = ((u32) LSHOLD_TAG << 24) | (u32) me;
             netpak_send(NETPAK_BROADCAST, 0, &hold, sizeof(hold));
@@ -1865,6 +1873,26 @@ bool net_lockstep_stalled(void) {
  * the sim stream. Paired with the load at the top of net_lockstep_tick. No-op
  * unless a lockstep race is active. Call from race_logic_loop between sim and
  * render. */
+/* Background/cloud scroll must follow the LOCAL view. course_update_clouds
+ * (pre-render, func_80059D00) reads camera1, which at that point still holds
+ * the SIM camera (player 0's) — a joiner's background visibly rotated with
+ * the HOST's movement. Swap in last frame's local camera around just this
+ * call. Cloud scroll is pure per-view render state: per-console divergence
+ * here is the point, and no RNG is consumed. */
+void net_course_update_clouds_screen0(void) {
+    extern void course_update_clouds(s32);
+#if NET_LOCKSTEP
+    if (netpak_present() && net_menu_online_active() && net_lockstep_local_slot() != 0 && sCamLocInit) {
+        Camera save = *camera1;
+        *camera1 = sCamLoc1;
+        course_update_clouds(0);
+        *camera1 = save;
+        return;
+    }
+#endif
+    course_update_clouds(0);
+}
+
 void net_lockstep_rng_save(void) {
 #if NET_LOCKSTEP
     extern u16 gRandomSeed16;
