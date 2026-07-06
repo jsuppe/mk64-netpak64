@@ -350,6 +350,11 @@ static u32 net_now_us(void) {
     return (u32)((osGetTime() * 64ull) / 3000ull);
 }
 
+/* non-static alias for the lobby ping (net_menu.c) */
+u32 net_time_us(void) {
+    return net_now_us();
+}
+
 void net_race_reset(void) {
     s32 i;
     bzero(sRemote, sizeof(sRemote));

@@ -577,10 +577,73 @@ bool net_menu_poll_course(void) {
     return false;
 }
 
+/* --- Lobby ping (v33) --------------------------------------------------
+ * True player-to-player round trip (via the relay) measured in the lobby:
+ * PING (0x4D) carries our microsecond clock; the peer echoes PONG (0x4E)
+ * with the timestamp untouched; delta/1000 = ms, smoothed 50/50. Lobby
+ * states only — never during lockstep. */
+#define NETPING_TAG 0x4D
+#define NETPONG_TAG 0x4E
+static s16 sPingMs[8];   /* -1 = no measurement yet */
+static u32 sPingTick;
+
+static u32 ping_now_us(void) {
+    extern u32 net_time_us(void);
+    return net_time_us();
+}
+
+/* Single lobby packet drain: sends pings, answers pings, records pongs, and
+ * REPORTS (not eats!) a lobby START. Returns true when a START arrived; the
+ * message is copied into *startOut and startSrc. Everything else in the
+ * lobby is stale race-era noise and is dropped. */
+static bool net_menu_lobby_drain(OnlineMsg* startOut, u8* startSrc) {
+    static netpak_pkt_t pkt;
+    s32 i;
+    bool gotStart = false;
+    if ((sPingTick++ % 20) == 0) { /* ~3x/sec per peer */
+        for (i = 0; i < sPeerCount; i++) {
+            u32 m[2];
+            if (sPeers[i].node_id == (u8) sNodeId) {
+                continue;
+            }
+            m[0] = ((u32) NETPING_TAG << 24) | (u32) (sNodeId & 0xFF);
+            m[1] = ping_now_us();
+            netpak_send(sPeers[i].node_id, 0, m, sizeof(m));
+            netpak_debug_poke(0xFB000000u | sPeers[i].node_id); /* ping sent */
+        }
+    }
+    while (netpak_recv(&pkt) == 0) {
+        if (pkt.ch == 0 && pkt.len >= 8 && pkt.data[0] == NETPING_TAG) {
+            u32 r[2]; /* echo, timestamp untouched, straight back */
+            r[0] = ((u32) NETPONG_TAG << 24) | (u32) (sNodeId & 0xFF);
+            r[1] = ((u32*) pkt.data)[1];
+            netpak_send(pkt.src, 0, r, sizeof(r));
+            netpak_debug_poke(0xFC000000u | pkt.src); /* ping echoed */
+        } else if (pkt.ch == 0 && pkt.len >= 8 && pkt.data[0] == NETPONG_TAG) {
+            u32 dt = ping_now_us() - ((u32*) pkt.data)[1];
+            s32 ms = (s32) (dt / 1000u);
+            s32 slot = pkt.src & 7;
+            if (ms > 999) {
+                ms = 999;
+            }
+            sPingMs[slot] = (sPingMs[slot] < 0) ? (s16) ms
+                          : (s16) ((sPingMs[slot] + ms) / 2);
+            netpak_debug_poke(0xFD000000u | ((u32) slot << 16) | ((u32) ms & 0xFFFFu)); /* measured */
+        } else if (pkt.ch == 1 && pkt.len >= (u16) sizeof(OnlineMsg) &&
+                   pkt.data[0] == OLMSG_TAG && pkt.data[1] == OLMSG_START && startOut != NULL) {
+            memcpy(startOut, pkt.data, sizeof(OnlineMsg));
+            *startSrc = pkt.src;
+            gotStart = true;
+        }
+    }
+    return gotStart;
+}
+
 void net_menu_reset(void) {
     s32 i;
     sState = OM_MAIN;
     sVerMismatch = 0; /* fresh session, fresh cross-check */
+    { s32 pi_; for (pi_ = 0; pi_ < 8; pi_++) { sPingMs[pi_] = -1; } }
     /* class picked on the game-select sub-menu (v27) seeds the lobby; the
      * lobby U/D still allows changing it before START */
     sCcSel = (gCCSelection >= CC_50 && gCCSelection <= CC_150) ? gCCSelection : CC_100;
@@ -742,6 +805,7 @@ void net_menu_update(struct Controller* controller) {
 
         case OM_HOSTING: {
             s32 n;
+            net_menu_lobby_drain(NULL, NULL);
             if ((sPeerPoll++ % 15) == 0) { /* refresh the roster ~2x/sec */
                 n = netpak_peers(sPeers, 8);
                 if (n >= 0) {
@@ -774,8 +838,11 @@ void net_menu_update(struct Controller* controller) {
         }
 
         case OM_JOINED: {
-            static netpak_pkt_t pkt; /* 1 KB — keep off the stack */
+            static OnlineMsg startMsg;
+            u8 startSrc = 0;
+            bool gotStart;
             s32 n;
+            gotStart = net_menu_lobby_drain(&startMsg, &startSrc);
             if ((sPeerPoll++ % 15) == 0) { /* refresh the roster ~2x/sec */
                 n = netpak_peers(sPeers, 8);
                 if (n >= 0) {
@@ -808,17 +875,14 @@ void net_menu_update(struct Controller* controller) {
                     }
                 }
             }
-            /* Wait for the host's START: drain ch1 for a lobby control message. */
-            while (netpak_recv(&pkt) == 0) {
-                if (pkt.ch == 1 && pkt.len >= (u16)sizeof(OnlineMsg) &&
-                    pkt.data[0] == OLMSG_TAG && pkt.data[1] == OLMSG_START) {
-                    net_menu_check_ver(pkt.data[3]);
-                    sOnlineCourse = pkt.data[2]; /* 0xFF = host picks on the course screen */
-                    sOnlineCc = (pkt.data[4] <= CC_150) ? pkt.data[4] : CC_100;
-                    net_online_barrier_arm_joiner(pkt.src); /* host node id from START */
-                    net_menu_start_race(); /* same track as the host */
-                    return;
-                }
+            /* The host's START arrives via the shared drain above. */
+            if (gotStart) {
+                net_menu_check_ver(startMsg.pad);
+                sOnlineCourse = startMsg.course; /* 0xFF = host picks on the course screen */
+                sOnlineCc = (startMsg.chars[0] <= CC_150) ? startMsg.chars[0] : CC_100;
+                net_online_barrier_arm_joiner(startSrc); /* host node id from START */
+                net_menu_start_race(); /* same track as the host */
+                return;
             }
 #if NET_MENU_JOINED_CAN_START
             /* Test/repro only: the room creator (node 0) self-starts and hosts
@@ -1045,6 +1109,20 @@ void net_menu_render(void) {
             y = 0x94;
             for (i = 0; i < sPeerCount && i < 5; i++) {
                 print_text1_center_mode_1(0xA0, y, sPeers[i].name, 0, 0.7f, 0.7f);
+                if (sPeers[i].node_id != (u8) sNodeId && sPingMs[sPeers[i].node_id & 7] >= 0) {
+                    char pingTxt[8];
+                    s32 pv = sPingMs[sPeers[i].node_id & 7];
+                    s32 pn = 0;
+                    if (pv >= 100) { pingTxt[pn++] = (char) ('0' + pv / 100); }
+                    if (pv >= 10) { pingTxt[pn++] = (char) ('0' + (pv / 10) % 10); }
+                    pingTxt[pn++] = (char) ('0' + pv % 10);
+                    pingTxt[pn++] = 'M';
+                    pingTxt[pn++] = 'S';
+                    pingTxt[pn] = '\0';
+                    set_text_color(pv < 60 ? TEXT_GREEN : (pv < 120 ? TEXT_YELLOW : TEXT_RED));
+                    print_text_mode_1(0xE4, y, pingTxt, 0, 0.5f, 0.5f);
+                    set_text_color(TEXT_YELLOW);
+                }
                 y += 0xC;
             }
 
