@@ -1312,6 +1312,33 @@ void func_80059AC8(void) {
             case SCREEN_MODE_1P:
                 if (gGamestate != 9) {
                     func_80059A88(PLAYER_ONE);
+                    { /* NetPak64: the per-player update (current-player
+                         globals + lakitu + the ITEM-WINDOW state machine,
+                         func_8007BB9C) only ever ran for player 0 in 1P —
+                         the roulette of every other online player was never
+                         advanced, so item-box grants sat dead in state 1.
+                         Run it for the online slots too, inside this same
+                         sim pass so it is identical on every console.
+                         Slot 1 gets the full driver (lakitu objects exist
+                         for two players); slots 2-3 get the item window
+                         only. No-op offline. */
+                        extern s32 net_menu_online_active(void);
+                        extern s32 net_menu_player_count(void);
+                        if (net_menu_online_active()) {
+                            s32 np_ = net_menu_player_count();
+                            s32 i_;
+                            if (np_ > 4) {
+                                np_ = 4;
+                            }
+                            for (i_ = 1; i_ < np_; i_++) {
+                                if (i_ < 2) {
+                                    func_80059A88(i_);
+                                } else {
+                                    func_8007BB9C(i_);
+                                }
+                            }
+                        }
+                    }
                     if (gModeSelection == TIME_TRIALS) {
                         func_8005995C();
                     }

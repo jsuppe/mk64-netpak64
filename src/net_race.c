@@ -1073,6 +1073,7 @@ static u32  sBlkSendPos;
 #define NET_PAUSE_SYNC 1 /* freeze the lockstep timeline while paused (the fix
                           * for the pause->red-square desync); 0 = old behavior
                           * for A/B proof runs */
+static u32 sLsPauseTicks; /* pause-menu input debounce (see pause gate) */
 #define LSHOLD_TAG 0x49 /* "I'm paused, don't drop me": resets the peer's stall clock */
 #define LS_DROP_TICKS 240  /* stalled render-ticks on one frame before peer-table check */
 #define LS_DROP_HARD  900  /* stalled ticks -> drop even if the relay still lists them */
@@ -1237,6 +1238,33 @@ void net_lockstep_tick(void) {
         return;
     }
 #if NET_MENU_TEST && NET_DEMO_AUTODRIVE
+    /* ITEM-CHAIN probe: every ~300 ticks, simulate an item-box hit for MY
+     * slot (the exact call the box makes) and trace the chain:
+     * 0xA8 = grant attempt (slot | window obj state), 0xA9 = window's
+     * currentItem later, 0xAA = player's currentItemCopy. Identical calls on
+     * every console (each probes its own slot at the same tick), so the sim
+     * stays deterministic ONLY IF the grant path is deterministic — which is
+     * itself under test (0x7D fires if not). */
+    {
+        extern void func_8007ABFC(s32, s32);
+        extern s32 gItemWindowObjectByPlayerId[];
+        static u32 sIbTick;
+        if (gGamestate == RACING && me >= 0 && me < 4) {
+            sIbTick++;
+            if (sIbTick > 600 && (sIbTick % 300) == 0) {
+                s32 w = gItemWindowObjectByPlayerId[me];
+                netpak_debug_poke(0xA8000000u | ((u32) me << 20) | ((u32) gObjectList[w].state & 0xFFFFu));
+                func_8007ABFC(me, 0);
+            }
+            if (sIbTick > 600 && (sIbTick % 300) == 60) {
+                s32 w = gItemWindowObjectByPlayerId[me];
+                netpak_debug_poke(0xA9000000u | ((u32) me << 20) |
+                                  ((u32) ((ItemWindowObjects*) &gObjectList[w])->currentItem & 0xFFu));
+                netpak_debug_poke(0xAA000000u | ((u32) me << 20) | ((u32) gPlayers[me].currentItemCopy & 0xFFu));
+            }
+        }
+    }
+
     /* PAUSE regression test, REAL path: at tick 900 the host's captured ring
      * input carries a one-frame START press, so the vanilla pause loop
      * (func_8028F970, inside the gated sim) pauses EVERY console at the same
@@ -1282,6 +1310,12 @@ void net_lockstep_tick(void) {
         if (!sLsDropped[i]) {
             gPlayers[i].type = (gPlayers[i].type & ~(u32) PLAYER_CPU) | PLAYER_HUMAN;
         }
+        /* (v20: ALL 8 karts, not just humans — CPUs kept the visible-to-
+         * camera1 downgrade, and camera1 is the HOST's view, so on a
+         * JOINER's screen distant CPU karts ran the rail-mover and visibly
+         * drove through the ground. Offline no player can ever SEE an
+         * off-screen kart, so the cheat was invisible by construction;
+         * a joiner's independent view breaks that assumption.) */
         /* FULL PHYSICS ALWAYS for every online player's kart. The per-frame
          * dispatcher (player_controller.c ~540) runs real kart physics —
          * including TERRAIN COLLISION — only for karts visible to camera1,
@@ -1295,6 +1329,12 @@ void net_lockstep_tick(void) {
          * simply always visible on their own screen); deterministic because
          * it's set from the same roster on every console. */
         D_801633F8[i] = 1;
+    }
+    {
+        extern s16 D_801633F8[12];
+        for (i = np; i < 8; i++) {
+            D_801633F8[i] = 1; /* CPU karts too — see note above */
+        }
         /* dropped slots: type is set in the READY branch as a pure function of the
          * logical frame df (CPU iff df > L) — deciding it here, at tick time, raced
          * against DROP-message arrival: a receiver whose gate unblocked in the same
@@ -1514,6 +1554,13 @@ void net_lockstep_tick(void) {
         if (gIsGamePaused != 1) {
             gIsGamePaused = 1;
         }
+        /* debounce: the press that opened the pause can leak a stale edge
+         * into the menu on the very next frames ("pauses then instantly
+         * unpauses"). Swallow local menu input for the first quarter second. */
+        if (sLsPauseTicks < 15) {
+            sLsPauseTicks++;
+            gControllers[0].buttonPressed = 0;
+        }
         if ((holdTick++ & 31) == 0) {
             u32 hold = ((u32) LSHOLD_TAG << 24) | (u32) me;
             netpak_send(NETPAK_BROADCAST, 0, &hold, sizeof(hold));
@@ -1522,6 +1569,7 @@ void net_lockstep_tick(void) {
                                * let rng_save snapshot that into the sim seed */
         return;
     }
+    sLsPauseTicks = 0; /* not paused: re-arm the pause-menu debounce */
 #endif
 
     /* STALL GATE. Simulate logical frame df only when EVERY player's input for it
@@ -1854,6 +1902,9 @@ void net_lockstep_prerace_clear(void) {
     u8* start = unk_cpu_vehicles_camera_path_pad;
     u8* end = LS_CPU_STATE_END;
     bzero(start, (u32) (end - start));
+    /* cameras 2-4 carry per-console menu residue; slot 1's lakitu/window
+     * update (v20) reads camera1[1], so they must agree at race entry */
+    bzero(&camera1[1], (u32) (sizeof(Camera) * 3));
 #endif
 }
 
@@ -1902,21 +1953,12 @@ void net_course_update_clouds_screen0(void) {
 void net_online_drive_item_windows(void) {
 #if NET_LOCKSTEP
     extern void func_8007A910(s32);
-    extern void func_8007A88C(s32);
-    s32 i, np;
     if (!netpak_present() || !net_menu_online_active()) {
         return;
     }
-    np = net_menu_player_count();
-    if (np > 4) {
-        np = 4; /* item-window array capacity */
-    }
-    for (i = 1; i < np; i++) {
-        if (i == 1) {
-            func_8007A910(1);
-        } else {
-            func_8007A88C(i);
-        }
+    if (net_menu_player_count() >= 2) {
+        func_8007A910(1); /* slot 1: lakitu rescue + reverse detection (the
+                           * item window is driven from the SIM since v20) */
     }
 #endif
 }
