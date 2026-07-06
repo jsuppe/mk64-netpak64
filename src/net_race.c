@@ -122,6 +122,8 @@ static void net_race_menu_test(void) {
                     if ((dGap++ & 1) == 0) { press = D_JPAD; downs++; } else { press = 0; }
                 }
                 else { press = A_BUTTON; }
+            } else if (gMainMenuSelection == 6 || gMainMenuSelection == 7) {
+                press = A_BUTTON; /* OK_SELECT (+go-back variant): confirm */
             } else if (gMainMenuSelection == 5) { /* MODE_SUB_SELECT: the CC
                     class sub-menu ONLINE now routes through (v27) — confirm
                     the default 50cc and continue to the online screen */

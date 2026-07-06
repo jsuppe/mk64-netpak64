@@ -1445,12 +1445,11 @@ void main_menu_act(struct Controller* controller, u16 controllerIdx) {
                 if (btnAndStick & A_BUTTON) {
                     reset_cycle_flash_menu();
                     if (gGameModePlayerSelection[gPlayerCount - 1][gGameModeMenuColumn[gPlayerCount - 1]] == ONLINE) {
-                        /* NetPak64: class chosen with the vanilla animated
-                         * sub-menu; carry it into the online lobby */
-                        gCCSelection = subMode;
-                        gIsMirrorMode = 0;
-                        func_online_fade();
-                        play_sound2(SOUND_MENU_VERSUS);
+                        /* NetPak64: class picked — confirm on the flashing
+                         * OK button like every other mode (user request) */
+                        gMainMenuSelection = MAIN_MENU_OK_SELECT;
+                        play_sound2(SOUND_MENU_SELECT);
+                        gMenuTimingCounter = 0;
                     } else if ((gPlayerCount == 1) && ((gGameModeMenuColumn - 1)[gPlayerCount] == 1) && (subMode == 1)) {
                         func_8009E258();
                         play_sound2(SOUND_MENU_DATA);
@@ -1475,6 +1474,7 @@ void main_menu_act(struct Controller* controller, u16 controllerIdx) {
                         case 0:
                         case 1:
                         case 2:
+                        case ONLINE: /* NetPak64: back to the class pick */
                             gMainMenuSelection = MAIN_MENU_MODE_SUB_SELECT;
                             break;
                         default:
@@ -1488,6 +1488,15 @@ void main_menu_act(struct Controller* controller, u16 controllerIdx) {
                     break;
                 }
                 if (btnAndStick & A_BUTTON) {
+                    if (gGameModePlayerSelection[gPlayerCount - 1][gGameModeMenuColumn[gPlayerCount - 1]] == ONLINE) {
+                        /* NetPak64: confirmed — carry the class into the lobby */
+                        gCCSelection = gGameModeSubMenuColumn[gPlayerCount - 1][gGameModeMenuColumn[gPlayerCount - 1]];
+                        gIsMirrorMode = 0;
+                        func_online_fade();
+                        play_sound2(SOUND_MENU_OK_CLICKED);
+                        gMenuTimingCounter = 0;
+                        break;
+                    }
                     func_8009E1C0();
                     play_sound2(SOUND_MENU_OK_CLICKED);
                     setup_selected_game_mode();
