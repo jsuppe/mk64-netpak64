@@ -1367,7 +1367,9 @@ void func_80059D00(void) {
                     func_80059820(PLAYER_ONE);
                     func_8005B914();
                     if (!gDemoMode) {
+                        extern void net_online_drive_item_windows(void);
                         func_8007AA44(0);
+                        net_online_drive_item_windows(); /* no-op offline */
                     }
                     { /* NetPak64: joiner's background must scroll with the
                          LOCAL view camera, not the sim camera (no-op offline) */

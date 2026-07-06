@@ -1893,6 +1893,34 @@ void net_course_update_clouds_screen0(void) {
     course_update_clouds(0);
 }
 
+/* Drive the item-window state machine (and lakitu) for every online player.
+ * Vanilla 1P only runs func_8007A910(0): grants for other slots armed a
+ * window whose roulette never advanced — boxes broke, no item appeared.
+ * Slot 1 gets the full driver (window + lakitu rescue: both objects exist in
+ * 1P); slots 2-3 get the window machine only (no lakitu objects for them).
+ * Runs in the RNG-protected pre-render span, identically on every console. */
+void net_online_drive_item_windows(void) {
+#if NET_LOCKSTEP
+    extern void func_8007A910(s32);
+    extern void func_8007A88C(s32);
+    s32 i, np;
+    if (!netpak_present() || !net_menu_online_active()) {
+        return;
+    }
+    np = net_menu_player_count();
+    if (np > 4) {
+        np = 4; /* item-window array capacity */
+    }
+    for (i = 1; i < np; i++) {
+        if (i == 1) {
+            func_8007A910(1);
+        } else {
+            func_8007A88C(i);
+        }
+    }
+#endif
+}
+
 void net_lockstep_rng_save(void) {
 #if NET_LOCKSTEP
     extern u16 gRandomSeed16;

@@ -1001,7 +1001,8 @@ void init_hud_one_player(void) {
          holds 4) so up to 4 online players get the full item system; runs
          identically on every console, so object indices stay in lockstep. */
         extern s32 net_menu_online_active(void);
-        if (net_menu_online_active()) {
+        extern s32 net_menu_player_count(void);
+        if (net_menu_online_active() && net_menu_player_count() > 2) {
             find_unused_obj_index(&gItemWindowObjectByPlayerId[2]);
             find_unused_obj_index(&gItemWindowObjectByPlayerId[3]);
         }
@@ -1037,10 +1038,13 @@ void init_hud_one_player(void) {
     init_item_window(gItemWindowObjectByPlayerId[0]);
     { /* NetPak64: initialize the online players' windows as well */
         extern s32 net_menu_online_active(void);
+        extern s32 net_menu_player_count(void);
         if (net_menu_online_active()) {
             init_item_window(gItemWindowObjectByPlayerId[1]);
-            init_item_window(gItemWindowObjectByPlayerId[2]);
-            init_item_window(gItemWindowObjectByPlayerId[3]);
+            if (net_menu_player_count() > 2) {
+                init_item_window(gItemWindowObjectByPlayerId[2]);
+                init_item_window(gItemWindowObjectByPlayerId[3]);
+            }
         }
     }
     for (someIndex = 0, something = 35.0f; someIndex < 8; someIndex++, something += 32.0) {

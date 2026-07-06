@@ -828,7 +828,12 @@ void func_8028F970(void) {
         if ((controller->buttonPressed & START_BUTTON) && (!(controller->button & R_TRIG)) &&
             (!(controller->button & L_TRIG))) {
             func_8028DF00();
-            gIsGamePaused = (controller - gControllerOne) + 1;
+            { /* NetPak64: online, the pause menu must run on each console's
+                 LOCAL pad — the pauser's slot can be a ring-fed controller
+                 frozen by the pause itself (dead menu on every console). */
+                extern s32 net_menu_online_active(void);
+                gIsGamePaused = net_menu_online_active() ? 1 : (controller - gControllerOne) + 1;
+            }
             controller->buttonPressed = 0;
             func_800C9F90(1);
             gPauseTriggered = 1;
