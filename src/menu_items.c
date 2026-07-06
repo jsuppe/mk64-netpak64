@@ -9686,7 +9686,10 @@ void func_800A9E58(MenuItem* arg0) {
     temp_a1 = gGameModePlayerSelection[gPlayerCount - 1][gGameModeMenuColumn[gPlayerCount - 1]];
     switch (arg0->state) { /* switch 5; irregular */
         case 0:            /* switch 5 */
-            if ((temp_a1 != sp20) && (temp_a1 != sp1C)) {
+            if ((temp_a1 != sp20) && (temp_a1 != sp1C) &&
+                !(arg0->type >= 18 && arg0->type <= 20 && temp_a1 == 4)) {
+                /* NetPak64: 50/100/150cc panels (18-20) also show for
+                 * ONLINE (mode 4); EXTRA (21) stays GP/VS-only */
                 arg0->visible = 0;
             } else {
                 arg0->param2 = gGameModeMenuColumn[gPlayerCount - 1];

@@ -117,7 +117,10 @@ static void net_race_menu_test(void) {
             if (gMainMenuSelection == 3) {        /* PLAYER_SELECT: confirm 1P */
                 press = A_BUTTON;
             } else if (gMainMenuSelection == 4) { /* MODE_SELECT: down to ONLINE then confirm */
-                if (downs < 2) { press = D_JPAD; downs++; }
+                static s32 dGap;
+                if (downs < 2) { /* alternate press/release so each D is an edge */
+                    if ((dGap++ & 1) == 0) { press = D_JPAD; downs++; } else { press = 0; }
+                }
                 else { press = A_BUTTON; }
             } else if (gMainMenuSelection == 5) { /* MODE_SUB_SELECT: the CC
                     class sub-menu ONLINE now routes through (v27) — confirm
