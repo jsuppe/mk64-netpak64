@@ -59,6 +59,7 @@ extern void osSyncPrintf(const char* fmt, ...); /* declared in PR/os.h (not via 
  * 0 to disable. Pokes gMenuSelection (0xE0..) + a 0xFF..F success marker to
  * NP64_TRACE_IO. */
 #define NET_MENU_TEST 0
+#define NET_DETECTOR_SELFTEST 0 /* 1 = poison one sim mid-race to prove 0x7D fires */
 /* NET_DIAG: keep the render/position forensics pokes in HUMAN builds so a
  * player's own session (launcher sets NP64_TRACE_IO=1) captures the evidence
  * for on-device-only defects. Pokes are single register writes — negligible
@@ -1044,6 +1045,7 @@ static bool sBlkApplied;
 #define LS_HASHRING 64
 static u32  sLsHashFrame[LS_HASHRING];
 static u32  sLsHashVal[LS_HASHRING];
+static u32  sLsHashLastDf; /* dedupe: store/broadcast each df once (first eval) */
 static u32  sLsDesyncFrame; /* first mismatching frame (0 = none) */
 static bool sLsDesync;
 typedef struct {
@@ -1163,6 +1165,7 @@ static void net_lockstep_reset(void) {
     sBlkSendPos = 0;
     sLsDesync = false;
     sLsDesyncFrame = 0;
+    sLsHashLastDf = 0xFFFFFFFFu;
     {
         /* seed the ring with an impossible frame, NOT zero: a zeroed slot
          * claims "frame 0, hash 0", so a peer's real frame-0 hash arriving
@@ -1272,6 +1275,34 @@ void net_lockstep_tick(void) {
                                   ((u32) ((ItemWindowObjects*) &gObjectList[w])->currentItem & 0xFFu));
                 netpak_debug_poke(0xAA000000u | ((u32) me << 20) | ((u32) gPlayers[me].currentItemCopy & 0xFFu));
             }
+        }
+    }
+
+    /* DETECTOR SELF-TEST (NET_DETECTOR_SELFTEST=1 only): node 1 deliberately
+     * poisons its own sim at tick 2500 (speed nudge). The detector MUST latch
+     * (0x7D) on both consoles within a second — this caught the gate
+     * miscompile that silently blinded the detector for several versions.
+     * Leave OFF for determinism campaigns (it desyncs every race by design). */
+#if NET_DETECTOR_SELFTEST
+    {
+        static u32 sDsTick;
+        if (gGamestate == RACING) {
+            sDsTick++;
+            if (me == 1 && sDsTick == 2500) {
+                gPlayers[1].speed += 5.0f;
+                netpak_debug_poke(0xCD000001u);
+            }
+        }
+    }
+#endif
+
+    /* course-id witness: which course did THIS console load? (0xCC poke) */
+    {
+        extern s16 gCurrentCourseId;
+        static s32 sCcLast = -1;
+        if (gGamestate == RACING && gCurrentCourseId != sCcLast) {
+            sCcLast = gCurrentCourseId;
+            netpak_debug_poke(0xCC000000u | ((u32) gCurrentCourseId & 0xFFu));
         }
     }
 
@@ -1455,6 +1486,23 @@ void net_lockstep_tick(void) {
         if (pkt.ch == 0 && pkt.len >= (u16) sizeof(LsHashMsg) && pkt.data[0] == LSHASH_TAG) {
             /* live desync check: compare the peer's (frame, hash) to ours */
             const LsHashMsg* hm = (const LsHashMsg*) pkt.data;
+#if NET_MENU_TEST
+            { /* pipeline bisect: E9=arrived, EA=frame-match-value-same,
+                 EB=frame-mismatch (ring slot holds another frame) */
+                static u32 rxDbg;
+                if ((rxDbg++ & 31) == 0) {
+                    netpak_debug_poke(0xE9000000u | (hm->frame & 0xFFFFFFu));
+                    if (sLsHashFrame[hm->frame % LS_HASHRING] == hm->frame) {
+                        if (sLsHashVal[hm->frame % LS_HASHRING] == hm->hash) {
+                            netpak_debug_poke(0xEA000000u | (hm->frame & 0xFFFFFFu));
+                        }
+                    } else {
+                        netpak_debug_poke(0xEB000000u |
+                                          (sLsHashFrame[hm->frame % LS_HASHRING] & 0xFFFFFFu));
+                    }
+                }
+            }
+#endif
             if (!sLsDesync && sLsHashFrame[hm->frame % LS_HASHRING] == hm->frame &&
                 sLsHashVal[hm->frame % LS_HASHRING] != hm->hash) {
                 sLsDesync = true;
@@ -1899,7 +1947,20 @@ void net_lockstep_tick(void) {
                  * A peer's copy arriving one tick late (guaranteed on a real
                  * network) then compares against a different repeat -> false
                  * red square at race entry, 100% reproducible on-device. */
-                if (f >= LS_DELAY) {
+                /* Store/broadcast each df ONCE — its FIRST evaluation. The
+                 * delay ramp evaluates df=0 several times with evolving state;
+                 * both consoles execute the identical ramp, so first-eval
+                 * hashes are comparable. (Replaces an `f >= LS_DELAY` gate
+                 * that the optimizer miscompiled into a dead branch — the
+                 * detector was blind for several versions; proven by
+                 * disassembly and the poison self-test.) */
+                if (df != sLsHashLastDf) {
+                sLsHashLastDf = df;
+#if NET_MENU_TEST
+                if (df < 40 || (df & 63) == 5) {
+                    netpak_debug_poke(0xF6000000u | (df & 0xFFFFFFu)); /* store ran */
+                }
+#endif
                 sLsHashFrame[df % LS_HASHRING] = df;
                 sLsHashVal[df % LS_HASHRING] = h;
                 if ((df & 15) == 0) {
@@ -1910,6 +1971,9 @@ void net_lockstep_tick(void) {
                     hm.frame = df;
                     hm.hash = h;
                     netpak_send(NETPAK_BROADCAST, 0, &hm, sizeof(hm));
+#if NET_MENU_TEST
+                    netpak_debug_poke(0xE8000000u | (df & 0xFFFFFFu)); /* hash SENT */
+#endif
                 }
                 }
             }
@@ -2271,6 +2335,11 @@ void net_lockstep_cam_pop(void) {
 }
 
 s16 gNetCullSection; /* written by render_courses.c: last course chunk drawn */
+#if NET_MENU_TEST && NET_DEMO_AUTODRIVE
+const s32 gNetRaceLaps = 1; /* test: bots finish quickly -> post-race flow reachable */
+#else
+const s32 gNetRaceLaps = 3; /* product: vanilla */
+#endif
 u16 gNetColCnt[8];   /* written by collision.c: surface-collision tests per kart */
 
 /* TEMP #31 render diag: which course chunk the renderer chose vs the section

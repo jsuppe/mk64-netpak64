@@ -543,7 +543,8 @@ void func_8028EF28(void) {
             gPlayers[i].lapCount++;
 
             if ((gPlayers[i].type & PLAYER_HUMAN) != 0) {
-                if (gPlayers[i].lapCount == 3) {
+                extern const s32 gNetRaceLaps; /* 3 in product; 1 in bot test builds */
+                if (gPlayers[i].lapCount == gNetRaceLaps) {
                     func_8028EEF0(i);
 
                     currentPosition = gPlayers[i].currentRank;
@@ -633,10 +634,13 @@ void func_8028EF28(void) {
                         func_800CA49C((u8) i);
                     }
                 }
-            } else if (gPlayers[i].lapCount == 3) {
+            } else {
+                extern const s32 gNetRaceLaps;
+                if (gPlayers[i].lapCount == gNetRaceLaps) {
                 func_8028EEF0(i);
                 if (gModeSelection == TIME_TRIALS) {
                     func_80005AE8(player);
+                }
                 }
             }
         }
