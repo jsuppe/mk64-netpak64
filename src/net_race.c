@@ -2458,6 +2458,34 @@ void net_render_cull_diag(void) {
 #endif
 }
 
+/* NETWORK-WAIT indicator (ships in ALL online builds): a pulsing YELLOW
+ * square top-left while the lockstep gate has been stalled >2s on the same
+ * frame — the game is WAITING for a peer, not crashed. The drop protocol
+ * evicts an unresponsive player after ~4s (relay-confirmed gone) or ~15s
+ * (hard), so this indicator's job is to keep users from killing the game
+ * before self-healing kicks in. Distinct from the RED desync square. */
+void net_lockstep_stall_indicator(void) {
+#if NET_LOCKSTEP
+    extern Gfx* gDisplayListHead;
+    if (!netpak_present() || !net_menu_online_active() || gGamestate != RACING) {
+        return;
+    }
+    if (!sLsStall || sLsStallTicks < 120) {
+        return;
+    }
+    if (sLsStallTicks & 8) {
+        gDPPipeSync(gDisplayListHead++);
+        gDPSetRenderMode(gDisplayListHead++, G_RM_OPA_SURF, G_RM_OPA_SURF2);
+        gDPSetCycleType(gDisplayListHead++, G_CYC_FILL);
+        gDPSetFillColor(gDisplayListHead++,
+                        (GPACK_RGBA5551(255, 220, 0, 1) << 16) | GPACK_RGBA5551(255, 220, 0, 1));
+        gDPFillRectangle(gDisplayListHead++, 12, 30, 26, 44);
+        gDPPipeSync(gDisplayListHead++);
+        gDPSetCycleType(gDisplayListHead++, G_CYC_1CYCLE);
+    }
+#endif
+}
+
 /* DESYNC indicator (ships in ALL online builds): once the live detector has
  * latched, flash a red square top-left of the race view every other half
  * second. If a player sees it, the two consoles' simulations have split and

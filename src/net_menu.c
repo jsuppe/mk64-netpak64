@@ -1067,6 +1067,23 @@ static void draw_option(s32 x, s32 y, char* text, bool selected) {
 void net_menu_render(void) {
     set_text_color(TEXT_BLUE_GREEN_RED_CYCLE_1);
     print_text1_center_mode_1(0xA0, 0x30, "ONLINE", 0, 1.2f, 1.2f);
+    { /* relay connection status, always visible on the online screens:
+         LINK_UP = the device's socket to the relay is alive; SESSION = we
+         hold a seat in a room. The driver retries the link forever, so
+         "down" reads as CONNECTING rather than a dead end. */
+        u32 st = netpak_status();
+        if (!(st & NETPAK_STATUS_LINK_UP)) {
+            set_text_color(TEXT_RED);
+            print_text1_center_mode_1(0xA0, 0x40, "CONNECTING TO RELAY...", 0, 0.5f, 0.5f);
+        } else if (!(st & NETPAK_STATUS_SESSION)) {
+            set_text_color(TEXT_GREEN);
+            print_text1_center_mode_1(0xA0, 0x40, "RELAY CONNECTED", 0, 0.5f, 0.5f);
+        } else {
+            set_text_color(TEXT_GREEN);
+            print_text1_center_mode_1(0xA0, 0x40, "RELAY CONNECTED - IN ROOM", 0, 0.5f, 0.5f);
+        }
+        set_text_color(TEXT_YELLOW);
+    }
 
     if (!netpak_present()) {
         set_text_color(TEXT_RED);
