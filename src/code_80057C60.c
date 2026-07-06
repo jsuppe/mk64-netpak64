@@ -1414,7 +1414,20 @@ void func_80059D00(void) {
                         net_course_update_clouds_screen0();
                     }
                     if (playerHUD[PLAYER_ONE].raceCompleteBool == 0) {
-                        func_8005C360((gPlayerOneCopy->speed / 18.0f) * 216.0f);
+                        { /* NetPak64: engine pitch follows the LOCAL kart's
+                             speed, not player 0's (the joiner's engine used
+                             to rev with the HOST's kart) */
+                            extern s32 net_lockstep_local_slot(void);
+                            extern s32 net_menu_online_active(void);
+                            Player* sndKart = gPlayerOneCopy;
+                            if (net_menu_online_active()) {
+                                s32 ls_ = net_lockstep_local_slot();
+                                if (ls_ > 0) {
+                                    sndKart = &gPlayerOne[ls_];
+                                }
+                            }
+                            func_8005C360((sndKart->speed / 18.0f) * 216.0f);
+                        }
                     }
                     func_8005D0FC(PLAYER_ONE);
                 } else {
