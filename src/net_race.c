@@ -2004,6 +2004,16 @@ void net_lockstep_prerace_clear(void) {
     /* cameras 2-4 carry per-console menu residue; slot 1's lakitu/window
      * update (v20) reads camera1[1], so they must agree at race entry */
     bzero(&camera1[1], (u32) (sizeof(Camera) * 3));
+    /* playerHUD[1..3] too: the item-window state machine (func_8007B34C,
+     * driven for online slots since v20) steps slideItemBoxX/Y and timers in
+     * these entries, which 1P mode never initializes — menu residue differed
+     * per console, so the first item grant's roulette ran with different
+     * timing and forked the shared RNG stream (the reproducible df~863
+     * red square, on-device and in-harness). */
+    {
+        extern hud_player playerHUD[];
+        bzero(&playerHUD[1], (u32) (sizeof(hud_player) * 3));
+    }
 #endif
 }
 
