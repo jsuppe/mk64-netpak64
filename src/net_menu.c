@@ -120,6 +120,9 @@ enum OnlineMenuState {
 static s32  sState;
 static s32  sSel;             /* OM_MAIN cursor: 0 = HOST, 1 = JOIN, 2 = NAME */
 static char sCode[8];         /* room code (create result or join entry) */
+static s32  sCcSel = CC_100;  /* host's engine-class pick (50/100/150cc) */
+static s32  sOnlineCc = CC_100; /* class this race runs at (synced via START) */
+static char* kCcNames[3] = { "50CC", "100CC", "150CC" };
 static s32  sEntryPos;        /* OM_JOIN_ENTRY cursor 0..CODE_LEN-1 */
 static char sName[NAME_LEN + 1]; /* player name, space-padded while editing */
 static s32  sNamePos;         /* OM_NAME_ENTRY cursor 0..NAME_LEN-1 */
@@ -189,7 +192,9 @@ static void net_menu_start_race(void) {
     gScreenModeSelection = SCREEN_MODE_1P;
     gPlayerCount = 1;
     gPlayerCountSelection1 = 1;
-    gCCSelection = CC_100;
+    gCCSelection = sOnlineCc; /* host-picked class, synced via START (CPU
+                               * speeds depend on it -> must match on every
+                               * console or the shared sim forks) */
     gPlaceItemBoxes = 1;
     gIsMirrorMode = 0;
     gDemoMode = DEMO_MODE_INACTIVE; /* human drives slot 0, not AI */
@@ -411,10 +416,15 @@ bool net_online_barrier_ready(void) {
                 }
                 {
                     OnlineMsg m;
+                    s32 ci2;
                     m.tag = OLMSG_TAG;
                     m.type = OLMSG_START;
                     m.course = sOnlineCourse;
                     m.pad = (u8) NETPAK_ROM_VERSION; /* version cross-check */
+                    for (ci2 = 0; ci2 < 8; ci2++) {
+                        m.chars[ci2] = 0;
+                    }
+                    m.chars[0] = (u8) sOnlineCc; /* class rides with every START */
                     for (i = 0; i < nr; i++) {
                         netpak_send(roster[i].node_id, 1, &m, sizeof(m));
                     }
@@ -702,6 +712,14 @@ void net_menu_update(struct Controller* controller) {
                 sCourseSel = (sCourseSel + NUM_ONLINE_COURSES - 1) % NUM_ONLINE_COURSES;
                 play_sound2(SOUND_MENU_CURSOR_MOVE);
             }
+            if (btn & U_JPAD) {
+                sCcSel = (sCcSel + 1) % 3;
+                play_sound2(SOUND_MENU_CURSOR_MOVE);
+            }
+            if (btn & D_JPAD) {
+                sCcSel = (sCcSel + 2) % 3;
+                play_sound2(SOUND_MENU_CURSOR_MOVE);
+            }
             if (btn & B_BUTTON) {
                 netpak_session_leave();
                 sState = OM_MAIN;
@@ -709,12 +727,18 @@ void net_menu_update(struct Controller* controller) {
                 play_sound2(SOUND_MENU_GO_BACK);
             } else if (btn & START_BUTTON) {
                 OnlineMsg m;
+                s32 ci;
                 net_online_barrier_arm_host(); /* refresh roster, wait for these peers */
                 sOnlineCourse = kCourses[sCourseSel].id;
+                sOnlineCc = sCcSel;
                 m.tag = OLMSG_TAG;
                 m.type = OLMSG_START;
                 m.course = sOnlineCourse;
                 m.pad = (u8) NETPAK_ROM_VERSION; /* version cross-check */
+                for (ci = 0; ci < 8; ci++) {
+                    m.chars[ci] = 0;
+                }
+                m.chars[0] = (u8) sOnlineCc; /* engine class rides with the course */
                 online_msg_send_all(&m);   /* tell the room which track to load */
                 net_menu_start_race();     /* -> character select -> locked course -> race */
             }
@@ -762,6 +786,7 @@ void net_menu_update(struct Controller* controller) {
                     pkt.data[0] == OLMSG_TAG && pkt.data[1] == OLMSG_START) {
                     net_menu_check_ver(pkt.data[3]);
                     sOnlineCourse = pkt.data[2];
+                    sOnlineCc = (pkt.data[4] <= CC_150) ? pkt.data[4] : CC_100;
                     net_online_barrier_arm_joiner(pkt.src); /* host node id from START */
                     net_menu_start_race(); /* same track as the host */
                     return;
@@ -773,12 +798,20 @@ void net_menu_update(struct Controller* controller) {
              * Lets two fixed-room instances run a full synced start headlessly. */
             if ((btn & START_BUTTON) && sNodeId == 0) {
                 OnlineMsg m;
+                s32 ci;
                 net_online_barrier_arm_host();
                 sOnlineCourse = kCourses[sCourseSel].id;
+                sOnlineCc = sCcSel;
                 m.tag = OLMSG_TAG;
                 m.type = OLMSG_START;
                 m.course = sOnlineCourse;
                 m.pad = (u8) NETPAK_ROM_VERSION; /* version cross-check */
+                for (ci = 0; ci < 8; ci++) {
+                    m.chars[ci] = 0; /* was UNINITIALIZED: receivers read
+                                      * chars[0] as the engine class since the
+                                      * CC feature -> random per-boot garbage */
+                }
+                m.chars[0] = (u8) sOnlineCc;
                 online_msg_send_all(&m);
                 net_menu_start_race();
                 return;
@@ -992,8 +1025,10 @@ void net_menu_render(void) {
                 print_text1_center_mode_1(0xA0, 0xB4, "COURSE", 0, 0.7f, 0.7f);
                 set_text_color(TEXT_BLUE_GREEN_RED_CYCLE_1);
                 print_text1_center_mode_1(0xA0, 0xC2, (char*)kCourses[sCourseSel].name, 0, 0.8f, 0.8f);
+                set_text_color(TEXT_BLUE);
+                print_text1_center_mode_1(0xA0, 0xCE, kCcNames[sCcSel], 0, 0.7f, 0.7f);
                 set_text_color(TEXT_YELLOW);
-                print_text1_center_mode_1(0xA0, 0xD4, "L/R COURSE  START BEGIN", 0, 0.55f, 0.55f);
+                print_text1_center_mode_1(0xA0, 0xDA, "L/R COURSE  U/D CLASS  START BEGIN", 0, 0.45f, 0.5f);
             } else { /* joiner waits for the host to pick + start */
                 set_text_color(TEXT_YELLOW);
                 print_text1_center_mode_1(0xA0, 0xC0, "WAITING FOR HOST", 0, 0.7f, 0.7f);

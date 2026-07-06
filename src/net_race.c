@@ -1306,8 +1306,25 @@ void net_lockstep_tick(void) {
         extern s16 gCurrentCourseId;
         static s32 sCcLast = -1;
         if (gGamestate == RACING && gCurrentCourseId != sCcLast) {
+            extern s32 gCCSelection;
             sCcLast = gCurrentCourseId;
-            netpak_debug_poke(0xCC000000u | ((u32) gCurrentCourseId & 0xFFu));
+            netpak_debug_poke(0xCC000000u | (((u32) gCCSelection & 0xFu) << 16) |
+                              ((u32) gCurrentCourseId & 0xFFu));
+        }
+    }
+
+    /* POST-RACE ADVANCE: once the local player has finished, pulse A so the
+     * ceremony/results screens advance (lets the harness photograph the
+     * standings board, where online names replace character names). */
+    {
+        static u32 sPrTick;
+        if (gGamestate == RACING && playerHUD[0].raceCompleteBool != 0) {
+            sPrTick++;
+            if (sPrTick > 240 && (sPrTick % 60) == 0) {
+                gControllers[0].buttonPressed |= A_BUTTON;
+            }
+        } else {
+            sPrTick = 0;
         }
     }
 
@@ -1921,7 +1938,7 @@ void net_lockstep_tick(void) {
                  * char/type table (0xC0+k) at the FIRST simulated frame, so a
                  * race-entry divergence names its kart + shows whether the
                  * character roster itself split (barrier fail-forward flake). */
-                if (df == 0) {
+                if (df == 0 || (df >= 896 && df <= 960 && (df & 7) == 0)) {
                     for (pi = 0; pi < NUM_PLAYERS; pi++) {
                         Player* pl = &gPlayers[pi];
                         u32 kh = 2166136261u;
@@ -1938,7 +1955,9 @@ void net_lockstep_tick(void) {
                             kh ^= fld[fi];
                             kh *= 16777619u;
                         }
-                        netpak_debug_poke(((0xB0u + (u32) pi) << 24) | (kh & 0xFFFFFFu));
+                        /* tag 0xB8, kart in bits 21-23 (0xB0+k collided with
+                         * the legacy speed poke at 0xB0 -> garbage diffs) */
+                        netpak_debug_poke(0xB8000000u | ((u32) pi << 21) | (kh & 0x1FFFFFu));
                         netpak_debug_poke(((0xC0u + (u32) pi) << 24) |
                                           (((u32) pl->type & 0xFFFFu) << 8) | ((u32) pl->characterId & 0xFFu));
                     }
