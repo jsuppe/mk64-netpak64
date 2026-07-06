@@ -586,6 +586,7 @@ bool net_menu_poll_course(void) {
 #define NETPONG_TAG 0x4E
 static s16 sPingMs[8];   /* -1 = no measurement yet */
 static u32 sPingTick;
+static u8  sLobbyCc = 0xFF; /* class as learned from the HOST's pings (joiners) */
 
 static u32 ping_now_us(void) {
     extern u32 net_time_us(void);
@@ -606,7 +607,8 @@ static bool net_menu_lobby_drain(OnlineMsg* startOut, u8* startSrc) {
             if (sPeers[i].node_id == (u8) sNodeId) {
                 continue;
             }
-            m[0] = ((u32) NETPING_TAG << 24) | (u32) (sNodeId & 0xFF);
+            m[0] = ((u32) NETPING_TAG << 24) | (((u32) sCcSel & 0xFFu) << 8) |
+                   (u32) (sNodeId & 0xFF);
             m[1] = ping_now_us();
             netpak_send(sPeers[i].node_id, 0, m, sizeof(m));
             netpak_debug_poke(0xFB000000u | sPeers[i].node_id); /* ping sent */
@@ -619,6 +621,9 @@ static bool net_menu_lobby_drain(OnlineMsg* startOut, u8* startSrc) {
             r[1] = ((u32*) pkt.data)[1];
             netpak_send(pkt.src, 0, r, sizeof(r));
             netpak_debug_poke(0xFC000000u | pkt.src); /* ping echoed */
+            if (pkt.src == 0) { /* the host's ping tells us the class */
+                sLobbyCc = pkt.data[2]; /* byte 1 of the BE word = bits 8-15 */
+            }
         } else if (pkt.ch == 0 && pkt.len >= 8 && pkt.data[0] == NETPONG_TAG) {
             u32 dt = ping_now_us() - ((u32*) pkt.data)[1];
             s32 ms = (s32) (dt / 1000u);
@@ -644,6 +649,7 @@ void net_menu_reset(void) {
     sState = OM_MAIN;
     sVerMismatch = 0; /* fresh session, fresh cross-check */
     { s32 pi_; for (pi_ = 0; pi_ < 8; pi_++) { sPingMs[pi_] = -1; } }
+    sLobbyCc = 0xFF;
     /* class picked on the game-select sub-menu (v27) seeds the lobby; the
      * lobby U/D still allows changing it before START */
     sCcSel = (gCCSelection >= CC_50 && gCCSelection <= CC_150) ? gCCSelection : CC_100;
@@ -1128,11 +1134,20 @@ void net_menu_render(void) {
 
             if (sState == OM_HOSTING) { /* host chooses the track for the room */
                 set_text_color(TEXT_GREEN);
+                set_text_color(TEXT_BLUE);
+                print_text1_center_mode_1(0xA0, 0xB6,
+                    sCcSel == CC_50 ? "50CC" : (sCcSel == CC_150 ? "150CC" : "100CC"), 0, 0.7f, 0.7f);
                 set_text_color(TEXT_YELLOW);
                 print_text1_center_mode_1(0xA0, 0xC8, "START  BEGIN", 0, 0.7f, 0.7f);
                 print_text1_center_mode_1(0xA0, 0xD8, "COURSE IS PICKED ON THE NEXT SCREEN", 0, 0.45f, 0.5f);
             } else { /* joiner waits for the host to pick + start */
                 set_text_color(TEXT_YELLOW);
+                if (sLobbyCc <= CC_150) {
+                    set_text_color(TEXT_BLUE);
+                    print_text1_center_mode_1(0xA0, 0xB0,
+                        sLobbyCc == CC_50 ? "50CC" : (sLobbyCc == CC_150 ? "150CC" : "100CC"), 0, 0.7f, 0.7f);
+                    set_text_color(TEXT_YELLOW);
+                }
                 print_text1_center_mode_1(0xA0, 0xC0, "WAITING FOR HOST", 0, 0.7f, 0.7f);
                 print_text1_center_mode_1(0xA0, 0xD4, "B  CANCEL", 0, 0.6f, 0.6f);
             }
