@@ -1074,7 +1074,10 @@ static u32  sBlkSendPos;
                           * for the pause->red-square desync); 0 = old behavior
                           * for A/B proof runs */
 static u32 sLsPauseTicks; /* pause-menu input debounce (see pause gate) */
-#define LSHOLD_TAG 0x49 /* "I'm paused, don't drop me": resets the peer's stall clock */
+static bool sLsWasPaused;  /* set while in the pause gate; a 1->0 edge = WE resumed */
+static u32 sLsResumeTx;    /* broadcast LSRESUME this many more ticks */
+#define LSHOLD_TAG 0x49
+#define LSRESUME_TAG 0x4A /* networked unpause: one player's resume releases all */ /* "I'm paused, don't drop me": resets the peer's stall clock */
 #define LS_DROP_TICKS 240  /* stalled render-ticks on one frame before peer-table check */
 #define LS_DROP_HARD  900  /* stalled ticks -> drop even if the relay still lists them */
 typedef struct {
@@ -1092,6 +1095,9 @@ typedef struct {
 } LsDropMsg;
 static bool sLsDropped[NET_MAX_SLOTS];
 static u32  sLsDropLast[NET_MAX_SLOTS]; /* L — last frame the leaver's input applies */
+static bool sLsDropNever[NET_MAX_SLOTS]; /* dropped WITHOUT ever sending an input
+    (left the lobby before the race): L=0 must not lock frame 0 — a ghost seat
+    froze every console at the very first frame (title-card/black-screen hang) */
 static u32  sLsStallTicks;              /* consecutive stalled ticks on the same frame */
 static u32  sLsStallFrame;              /* the df we've been stalled on */
 
@@ -1134,6 +1140,7 @@ static void net_lockstep_reset(void) {
     bzero(sLsPrevBtn, sizeof(sLsPrevBtn));
     bzero(sLsDropped, sizeof(sLsDropped));
     bzero(sLsDropLast, sizeof(sLsDropLast));
+    bzero(sLsDropNever, sizeof(sLsDropNever));
     sLsStallTicks = 0;
     sLsStallFrame = 0;
     sLsFrame = 0;
@@ -1200,6 +1207,9 @@ static void net_lockstep_apply_drop(const LsDropMsg* dm) {
     }
     sLsDropped[pl] = true;
     sLsDropLast[pl] = dm->lastFrame;
+    if (dm->count == 0) {
+        sLsDropNever[pl] = true; /* no inputs at all: CPU from frame 0 */
+    }
     netpak_debug_poke(0x58000000u | ((u32) pl << 16) | ((u32) dm->lastFrame & 0xFFFFu));
 }
 #endif /* NET_LOCKSTEP (module) — net_lockstep_tick below is always defined */
@@ -1284,8 +1294,9 @@ void net_lockstep_tick(void) {
             if (sPjPaused++ == 0) {
                 netpak_debug_poke(0xA6000000u | (sLsFrame & 0xFFFFFFu));
             }
-            if (sPjPaused > 90 && (sPjPaused % 20) == 0) {
-                gControllers[0].buttonPressed |= START_BUTTON; /* menu resume */
+            if (me == 1 && sPjPaused > 90 && (sPjPaused % 20) == 0) {
+                gControllers[0].buttonPressed |= START_BUTTON; /* menu resume —
+                    PAUSER ONLY: the peer must resume via LSRESUME broadcast */
             }
         } else if (sPjPaused != 0) {
             netpak_debug_poke(0xA7000000u | (sLsFrame & 0xFFFFFFu));
@@ -1452,6 +1463,12 @@ void net_lockstep_tick(void) {
             }
             continue;
         }
+        if (pkt.ch == 0 && pkt.data[0] == LSRESUME_TAG) {
+            if (gIsGamePaused != 0) {
+                gIsGamePaused = 0; /* networked resume */
+            }
+            continue;
+        }
         if (pkt.ch == 0 && pkt.data[0] == LSHOLD_TAG) {
             /* a peer is sitting in the pause menu: keep waiting for them instead
              * of escalating the stall into a DROP (which would CPU-convert a
@@ -1561,6 +1578,7 @@ void net_lockstep_tick(void) {
             sLsPauseTicks++;
             gControllers[0].buttonPressed = 0;
         }
+        sLsWasPaused = true;
         if ((holdTick++ & 31) == 0) {
             u32 hold = ((u32) LSHOLD_TAG << 24) | (u32) me;
             netpak_send(NETPAK_BROADCAST, 0, &hold, sizeof(hold));
@@ -1570,6 +1588,18 @@ void net_lockstep_tick(void) {
         return;
     }
     sLsPauseTicks = 0; /* not paused: re-arm the pause-menu debounce */
+    if (sLsWasPaused) {
+        /* WE just resumed (local menu): release everyone else too — leaving
+         * the peers paused stranded the resumed console at the stall gate,
+         * which looked exactly like a hang ("unpause only unpauses locally") */
+        sLsWasPaused = false;
+        sLsResumeTx = 3;
+    }
+    if (sLsResumeTx != 0) {
+        u32 rm = ((u32) LSRESUME_TAG << 24) | (u32) me;
+        sLsResumeTx--;
+        netpak_send(NETPAK_BROADCAST, 0, &rm, sizeof(rm));
+    }
 #endif
 
     /* STALL GATE. Simulate logical frame df only when EVERY player's input for it
@@ -1590,7 +1620,7 @@ void net_lockstep_tick(void) {
         for (i = 0; i < np; i++) {
             LsInput* s = &sLsInput[i][df % LS_RING];
             missMask[i] = false;
-            if (sLsDropped[i] && df > sLsDropLast[i]) {
+            if (sLsDropped[i] && (sLsDropNever[i] || df > sLsDropLast[i])) {
                 continue; /* dropped player: no input needed past their last frame L */
             }
             /* the slot must hold the input for EXACTLY df — have alone aliases once
@@ -1750,7 +1780,7 @@ void net_lockstep_tick(void) {
              * message arrived (the one-tick-skew fix). */
             for (i = 0; i < np; i++) {
                 if (sLsDropped[i]) {
-                    if (df > sLsDropLast[i]) {
+                    if (sLsDropNever[i] || df > sLsDropLast[i]) {
                         gPlayers[i].type = (gPlayers[i].type & ~(u32) PLAYER_HUMAN) | PLAYER_CPU;
                     } else {
                         gPlayers[i].type = (gPlayers[i].type & ~(u32) PLAYER_CPU) | PLAYER_HUMAN;
@@ -1778,7 +1808,7 @@ void net_lockstep_tick(void) {
                 const LsInput* s = &sLsInput[i][df % LS_RING];
                 u16 cur;
                 u16 prev = sLsPrevBtn[i];
-                if (sLsDropped[i] && df > sLsDropLast[i]) {
+                if (sLsDropped[i] && (sLsDropNever[i] || df > sLsDropLast[i])) {
                     s = &kNeutral; /* dropped: neutral input (kart is CPU anyway) — the
                                     * ring slot holds stale per-console data */
                 }
@@ -1796,7 +1826,7 @@ void net_lockstep_tick(void) {
                 u32 hi = 2166136261u;
                 for (i = 0; i < np; i++) {
                     LsInput* s = &sLsInput[i][df % LS_RING];
-                    if (sLsDropped[i] && df > sLsDropLast[i]) {
+                    if (sLsDropped[i] && (sLsDropNever[i] || df > sLsDropLast[i])) {
                         continue; /* stale per-console ring data — not part of the set */
                     }
                     hi ^= ((u32) s->button << 16) ^ ((u32) (u8) s->stickX << 8) ^ ((u32) (u8) s->stickY) ^ (u32) i;

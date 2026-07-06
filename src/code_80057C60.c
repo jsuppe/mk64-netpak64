@@ -965,7 +965,8 @@ void func_80058F48(void) {
 static s32 sNetHudSlot;     /* local slot in effect while swapped (0 = inactive) */
 static s32 sNetHudRank;     /* saved gGPCurrentRaceRankByPlayerId[0] (post-race place) */
 static s16 sNetHudRankLive; /* saved D_8018CF98[0] (DURING-race place display) */
-static s32 sNetHudItemObj;  /* saved gItemWindowObjectByPlayerId[0] */
+static s32 sNetHudItemObj;
+static s16 sNetHudSlideX, sNetHudSlideY;  /* saved gItemWindowObjectByPlayerId[0] */
 static s8  sNetHudAlsoLap;  /* saved playerHUD[0].alsoLapCount */
 static s8  sNetHudLap;      /* saved playerHUD[0].lapCount */
 
@@ -976,6 +977,8 @@ static void net_hud_local_push(void) {
         sNetHudRank = gGPCurrentRaceRankByPlayerId[PLAYER_ONE];
         sNetHudRankLive = D_8018CF98[PLAYER_ONE];
         sNetHudItemObj = gItemWindowObjectByPlayerId[PLAYER_ONE];
+        sNetHudSlideX = playerHUD[PLAYER_ONE].slideItemBoxX;
+        sNetHudSlideY = playerHUD[PLAYER_ONE].slideItemBoxY;
         sNetHudAlsoLap = playerHUD[PLAYER_ONE].alsoLapCount;
         sNetHudLap = playerHUD[PLAYER_ONE].lapCount;
         gGPCurrentRaceRankByPlayerId[PLAYER_ONE] = gGPCurrentRaceRankByPlayerId[ls];
@@ -984,6 +987,11 @@ static void net_hud_local_push(void) {
          * shows during the race as well as after the finish */
         D_8018CF98[PLAYER_ONE] = D_8018CF98[ls];
         gItemWindowObjectByPlayerId[PLAYER_ONE] = gItemWindowObjectByPlayerId[ls];
+        /* visibility slide too: the window CONTENT was swapped but the
+         * show/hide slide animation still tracked the HOST's window (user:
+         * "my item shows only while the host has an item") */
+        playerHUD[PLAYER_ONE].slideItemBoxX = playerHUD[ls].slideItemBoxX;
+        playerHUD[PLAYER_ONE].slideItemBoxY = playerHUD[ls].slideItemBoxY;
         playerHUD[PLAYER_ONE].alsoLapCount = (s8) gLapCountByPlayerId[ls];
         playerHUD[PLAYER_ONE].lapCount = (s8) gLapCountByPlayerId[ls];
     }
@@ -994,6 +1002,8 @@ static void net_hud_local_pop(void) {
         gGPCurrentRaceRankByPlayerId[PLAYER_ONE] = sNetHudRank;
         D_8018CF98[PLAYER_ONE] = sNetHudRankLive;
         gItemWindowObjectByPlayerId[PLAYER_ONE] = sNetHudItemObj;
+        playerHUD[PLAYER_ONE].slideItemBoxX = sNetHudSlideX;
+        playerHUD[PLAYER_ONE].slideItemBoxY = sNetHudSlideY;
         playerHUD[PLAYER_ONE].alsoLapCount = sNetHudAlsoLap;
         playerHUD[PLAYER_ONE].lapCount = sNetHudLap;
         sNetHudSlot = 0;
