@@ -1240,6 +1240,18 @@ static void netpak_boot(void) {
         bzero(_netbssSegmentNoloadStart,
               (s32) (_netbssSegmentNoloadEnd - _netbssSegmentNoloadStart));
     }
+    /* The SC64/USB transport is an overlay at 0x80430000 (v44, same pattern
+     * as the racing/ending segments). Load it before netpak_init(), whose
+     * device probe is the first call into it. One-shot: it is never evicted. */
+    {
+        extern u8 _nettextSegmentStart[];
+        extern u8 _nettextSegmentRomStart[];
+        extern u8 _nettextSegmentRomEnd[];
+        size_t sz = (size_t) (_nettextSegmentRomEnd - _nettextSegmentRomStart);
+        dma_copy(_nettextSegmentStart, _nettextSegmentRomStart, sz);
+        osInvalICache(_nettextSegmentStart, (s32) sz);
+        osInvalDCache(_nettextSegmentStart, (s32) sz);
+    }
     bzero(&gNetpakDbg, sizeof(gNetpakDbg));
     net_race_reset();
     if (netpak_init(false) != 0) {

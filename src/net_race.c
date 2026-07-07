@@ -130,12 +130,10 @@ static void net_race_menu_test(void) {
                 else { press = A_BUTTON; }
             } else if (gMainMenuSelection == 6 || gMainMenuSelection == 7) {
                 press = A_BUTTON; /* OK_SELECT (+go-back variant): confirm */
-            } else if (gMainMenuSelection == 5) { /* MODE_SUB_SELECT: the CC
-                    class sub-menu ONLINE now routes through (v27) — confirm
-                    the default 50cc and continue to the online screen */
-                static s32 dwell3;
-                if (dwell3++ < 90) { press = 0; } /* brief dwell for capture */
-                else { press = A_BUTTON; }
+            } else if (gMainMenuSelection == 5) { /* MODE_SUB_SELECT: dead for
+                    ONLINE since v44 (class moved to the HOST screen); kept for
+                    safety if the cursor ever lands here */
+                press = A_BUTTON;
             }
 #endif
             break;

@@ -112,6 +112,7 @@ static void net_menu_check_ver(u8 pad) {
 
 enum OnlineMenuState {
     OM_MAIN,       /* HOST GAME / JOIN GAME / NAME */
+    OM_HOST_CC,    /* host-only: pick 50/100/150cc before opening the room */
     OM_HOSTING,    /* created a room; showing code, waiting for players */
     OM_JOIN_ENTRY, /* dialing in a code */
     OM_JOINED,     /* joined a room; waiting for the host to start */
@@ -707,9 +708,9 @@ void net_menu_reset(void) {
     sVerMismatch = 0; /* fresh session, fresh cross-check */
     { s32 pi_; for (pi_ = 0; pi_ < 8; pi_++) { sPingMs[pi_] = -1; } }
     sLobbyCc = 0xFF;
-    /* class picked on the game-select sub-menu (v27) seeds the lobby; the
-     * lobby U/D still allows changing it before START */
-    sCcSel = (gCCSelection >= CC_50 && gCCSelection <= CC_150) ? gCCSelection : CC_100;
+    /* class is picked on the HOST screen (OM_HOST_CC); joiners never pick —
+     * they adopt the host's via START chars[0]. 100cc is the cursor default. */
+    sCcSel = CC_100;
     sSel = 0;
     sEntryPos = 0;
     sNodeId = -1;
@@ -840,21 +841,12 @@ void net_menu_update(struct Controller* controller) {
                     name_load();
                     sState = OM_NAME_ENTRY;
                     play_sound2(SOUND_MENU_SELECT);
-                } else if (sSel == 0) { /* HOST: open a room (needs the relay up) */
+                } else if (sSel == 0) { /* HOST: pick the class first (needs the
+                                         * relay up so the create won't fail) */
                     if (netpak_present() && (netpak_status() & NETPAK_STATUS_LINK_UP)) {
                         sLastErr = 0;
-                        /* With a launch code, join-or-create that exact room so
-                         * the joiner can use the same code; else create a fresh
-                         * random room and show its code. */
-                        sNodeId = sHavePreset ? netpak_session_join(sCode)
-                                              : netpak_session_create(sCode);
-                        if (sNodeId >= 0) {
-                            sState = OM_HOSTING;
-                            play_sound2(SOUND_MENU_OK_CLICKED);
-                        } else {
-                            sLastErr = -sNodeId;
-                            play_sound2(SOUND_MENU_GO_BACK);
-                        }
+                        sState = OM_HOST_CC;
+                        play_sound2(SOUND_MENU_SELECT);
                     }
                 } else { /* JOIN: always dial the code in (pre-filled from the
                           * launch code when one was given) — joining a room is
@@ -862,6 +854,40 @@ void net_menu_update(struct Controller* controller) {
                     sEntryPos = 0;
                     sState = OM_JOIN_ENTRY;
                     play_sound2(SOUND_MENU_SELECT);
+                }
+            }
+            break;
+
+        case OM_HOST_CC:
+            /* Host's engine class for the game they are hosting (the joiners
+             * never pick — they adopt this via lobby pings + START). */
+            if (btn & (U_JPAD | L_JPAD)) {
+                sCcSel = (sCcSel + 2) % 3; /* CC_50..CC_150 wrap */
+                play_sound2(SOUND_MENU_CURSOR_MOVE);
+            }
+            if (btn & (D_JPAD | R_JPAD)) {
+                sCcSel = (sCcSel + 1) % 3;
+                play_sound2(SOUND_MENU_CURSOR_MOVE);
+            }
+            if (btn & B_BUTTON) {
+                sState = OM_MAIN;
+                play_sound2(SOUND_MENU_GO_BACK);
+            } else if (btn & A_BUTTON) { /* class locked -> open the room */
+                if (netpak_present() && (netpak_status() & NETPAK_STATUS_LINK_UP)) {
+                    sLastErr = 0;
+                    /* With a launch code, join-or-create that exact room so
+                     * the joiner can use the same code; else create a fresh
+                     * random room and show its code. */
+                    sNodeId = sHavePreset ? netpak_session_join(sCode)
+                                          : netpak_session_create(sCode);
+                    if (sNodeId >= 0) {
+                        sState = OM_HOSTING;
+                        play_sound2(SOUND_MENU_OK_CLICKED);
+                    } else {
+                        sLastErr = -sNodeId;
+                        sState = OM_MAIN; /* show CONNECTION FAILED there */
+                        play_sound2(SOUND_MENU_GO_BACK);
+                    }
                 }
             }
             break;
@@ -1188,6 +1214,17 @@ void net_menu_render(void) {
             print_text1_center_mode_1(0xA0, 0xC4, "B  BACK", 0, 0.7f, 0.7f);
             break;
         }
+
+        case OM_HOST_CC:
+            set_text_color(TEXT_GREEN);
+            print_text1_center_mode_1(0xA0, 0x54, "SELECT CLASS", 0, 0.8f, 0.8f);
+            draw_option(0xA0, 0x6C, "50CC", sCcSel == CC_50);
+            draw_option(0xA0, 0x80, "100CC", sCcSel == CC_100);
+            draw_option(0xA0, 0x94, "150CC", sCcSel == CC_150);
+            set_text_color(TEXT_YELLOW);
+            print_text1_center_mode_1(0xA0, 0xB4, "A  HOST GAME", 0, 0.7f, 0.7f);
+            print_text1_center_mode_1(0xA0, 0xC4, "B  BACK", 0, 0.7f, 0.7f);
+            break;
 
         case OM_HOSTING:
         case OM_JOINED: {

@@ -6056,7 +6056,9 @@ void render_menus(MenuItem* arg0) {
                         switch (var_v1) {
                             case 0:
                             case 2:
-                            case 4: /* NetPak64 ONLINE: CC panels here too */
+                                /* NetPak64 ONLINE (4) deliberately absent: the
+                                 * class is picked on the HOST screen now, so no
+                                 * CC panels under the ONLINE column. */
                                 break;
                             default:
                                 var_a1 = -1;

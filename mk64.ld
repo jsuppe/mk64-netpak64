@@ -49,8 +49,6 @@ SECTIONS
       BUILD_DIR/src/netpak_mk64.o(.text*);
       BUILD_DIR/src/net_race.o(.text*);
       BUILD_DIR/src/net_menu.o(.text*);
-      BUILD_DIR/src/usb.o(.text*);
-      BUILD_DIR/src/netpak_sc64.o(.text*);
       BUILD_DIR/src/code_800029B0.o(.text*);
       BUILD_DIR/src/profiler.o(.text*);
       BUILD_DIR/src/crash_screen.o(.text*);
@@ -224,8 +222,6 @@ SECTIONS
       BUILD_DIR/src/netpak_mk64.o(.data*);
       BUILD_DIR/src/net_race.o(.data*);
       BUILD_DIR/src/net_menu.o(.data*);
-      BUILD_DIR/src/usb.o(.data*);
-      BUILD_DIR/src/netpak_sc64.o(.data*);
       BUILD_DIR/src/code_800029B0.o(.data*);
       BUILD_DIR/src/profiler.o(.data*);
       BUILD_DIR/src/crash_screen.o(.data*);
@@ -281,8 +277,6 @@ SECTIONS
       BUILD_DIR/src/netpak_mk64.o(.rodata*);
       BUILD_DIR/src/net_race.o(.rodata*);
       BUILD_DIR/src/net_menu.o(.rodata*);
-      BUILD_DIR/src/usb.o(.rodata*);
-      BUILD_DIR/src/netpak_sc64.o(.rodata*);
       BUILD_DIR/src/animation.o(.rodata*);
       BUILD_DIR/src/code_800029B0.o(.rodata*);
       BUILD_DIR/src/cpu_vehicles_camera_path.jp.o(.rodata*);
@@ -414,14 +408,31 @@ SECTIONS
    }
    _netbssSegmentNoloadEnd = ADDR(.netbss.noload) + SIZEOF(.netbss.noload);
 
+   /* SC64/USB transport code lives in Expansion Pak RAM too (v44): it is a
+    * loaded overlay segment (like racing/ending), DMA'd once at boot by
+    * netpak_boot() before netpak_init() ever calls into it. Keeps the main
+    * segment under the menu-arena ceiling permanently — netcode/transport
+    * growth lands here, not against the task-#33 ASSERT. */
+   BEGIN_SEG(nettext, 0x80430000) SUBALIGN(0x10)
+   {
+      BUILD_DIR/src/usb.o(.text*);
+      BUILD_DIR/src/netpak_sc64.o(.text*);
+      BUILD_DIR/src/usb.o(.data*);
+      BUILD_DIR/src/netpak_sc64.o(.data*);
+      BUILD_DIR/src/usb.o(.rodata*);
+      BUILD_DIR/src/netpak_sc64.o(.rodata*);
+      . = ALIGN(16);
+   }
+   END_SEG(nettext)
+   ASSERT(_netbssSegmentNoloadEnd <= 0x80430000,
+          "netbss grew into the nettext overlay: move nettext up")
+
    /* Menu-arena ceiling (task #33): the menu loader's overrun tops out at
     * pool start + ~0xE9580 and must stay below the racing segment at
-    * 0x8028DF00, i.e. pool start <= 0x801A4980. Was 0x801A4000 (a round
-    * number well under); raised to 0x801A4900 for the SC64 USB transport
-    * (v43), keeping 0x80 under the measured bound. If menu-time corruption
-    * of racing code ever reappears, move net/usb .text out of the main
-    * segment instead of raising this again. */
-   ASSERT(_memoryPoolSegmentNoloadStart <= 0x801A4900,
+    * 0x8028DF00, i.e. pool start <= 0x801A4980 measured; 0x801A4000 keeps
+    * the original safety cushion. When this trips, move more net/usb .text
+    * into the nettext overlay above — do NOT raise the ceiling. */
+   ASSERT(_memoryPoolSegmentNoloadStart <= 0x801A4000,
           "main segment too big: menu buffers would clobber racing-segment code (task #33)")
 
    

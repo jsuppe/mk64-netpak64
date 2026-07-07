@@ -1384,9 +1384,11 @@ void main_menu_act(struct Controller* controller, u16 controllerIdx) {
                             gMainMenuSelection = MAIN_MENU_OK_SELECT;
                             play_sound2(SOUND_MENU_BATTLE);
                             break;
-                        case ONLINE: /* NetPak64: class first, with the real
-                                        animated CC sub-menu (user request) */
-                            gMainMenuSelection = MAIN_MENU_MODE_SUB_SELECT;
+                        case ONLINE: /* NetPak64: no class pick here — the host
+                                        chooses 50/100/150cc on the HOST screen
+                                        and joiners never pick (user request).
+                                        Straight to OK, like BATTLE. */
+                            gMainMenuSelection = MAIN_MENU_OK_SELECT;
                             play_sound2(SOUND_MENU_VERSUS);
                             break;
                     }
@@ -1474,11 +1476,11 @@ void main_menu_act(struct Controller* controller, u16 controllerIdx) {
                         case 0:
                         case 1:
                         case 2:
-                        case ONLINE: /* NetPak64: back to the class pick */
                             gMainMenuSelection = MAIN_MENU_MODE_SUB_SELECT;
                             break;
                         default:
                         case 3:
+                        case ONLINE: /* NetPak64: no sub-menu, back to modes */
                             gMainMenuSelection = MAIN_MENU_MODE_SELECT;
                             break;
                     }
@@ -1489,8 +1491,8 @@ void main_menu_act(struct Controller* controller, u16 controllerIdx) {
                 }
                 if (btnAndStick & A_BUTTON) {
                     if (gGameModePlayerSelection[gPlayerCount - 1][gGameModeMenuColumn[gPlayerCount - 1]] == ONLINE) {
-                        /* NetPak64: confirmed — carry the class into the lobby */
-                        gCCSelection = gGameModeSubMenuColumn[gPlayerCount - 1][gGameModeMenuColumn[gPlayerCount - 1]];
+                        /* NetPak64: confirmed — class is picked later, on the
+                         * HOST screen (joiners adopt the host's via START) */
                         gIsMirrorMode = 0;
                         func_online_fade();
                         play_sound2(SOUND_MENU_OK_CLICKED);
