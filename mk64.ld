@@ -50,6 +50,7 @@ SECTIONS
       BUILD_DIR/src/net_race.o(.text*);
       BUILD_DIR/src/net_menu.o(.text*);
       BUILD_DIR/src/usb.o(.text*);
+      BUILD_DIR/src/netpak_sc64.o(.text*);
       BUILD_DIR/src/code_800029B0.o(.text*);
       BUILD_DIR/src/profiler.o(.text*);
       BUILD_DIR/src/crash_screen.o(.text*);
@@ -224,6 +225,7 @@ SECTIONS
       BUILD_DIR/src/net_race.o(.data*);
       BUILD_DIR/src/net_menu.o(.data*);
       BUILD_DIR/src/usb.o(.data*);
+      BUILD_DIR/src/netpak_sc64.o(.data*);
       BUILD_DIR/src/code_800029B0.o(.data*);
       BUILD_DIR/src/profiler.o(.data*);
       BUILD_DIR/src/crash_screen.o(.data*);
@@ -280,6 +282,7 @@ SECTIONS
       BUILD_DIR/src/net_race.o(.rodata*);
       BUILD_DIR/src/net_menu.o(.rodata*);
       BUILD_DIR/src/usb.o(.rodata*);
+      BUILD_DIR/src/netpak_sc64.o(.rodata*);
       BUILD_DIR/src/animation.o(.rodata*);
       BUILD_DIR/src/code_800029B0.o(.rodata*);
       BUILD_DIR/src/cpu_vehicles_camera_path.jp.o(.rodata*);
@@ -406,12 +409,19 @@ SECTIONS
       BUILD_DIR/src/net_race.o(.bss*);
       BUILD_DIR/src/net_menu.o(.bss*);
       BUILD_DIR/src/usb.o(.bss*);
+      BUILD_DIR/src/netpak_sc64.o(.bss*);
       . = ALIGN(0x10);
    }
    _netbssSegmentNoloadEnd = ADDR(.netbss.noload) + SIZEOF(.netbss.noload);
 
-   /* Menu-arena ceiling (task #33): pool start + 0xE9580 <= 0x8028DF00. */
-   ASSERT(_memoryPoolSegmentNoloadStart <= 0x801A4000,
+   /* Menu-arena ceiling (task #33): the menu loader's overrun tops out at
+    * pool start + ~0xE9580 and must stay below the racing segment at
+    * 0x8028DF00, i.e. pool start <= 0x801A4980. Was 0x801A4000 (a round
+    * number well under); raised to 0x801A4900 for the SC64 USB transport
+    * (v43), keeping 0x80 under the measured bound. If menu-time corruption
+    * of racing code ever reappears, move net/usb .text out of the main
+    * segment instead of raising this again. */
+   ASSERT(_memoryPoolSegmentNoloadStart <= 0x801A4900,
           "main segment too big: menu buffers would clobber racing-segment code (task #33)")
 
    

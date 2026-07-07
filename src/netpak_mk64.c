@@ -25,6 +25,7 @@
 #include <macros.h>       /* ALIGNED16 */
 #include <string.h>
 #include "netpak.h"
+#include "netpak_sc64.h"
 
 /* --- PI hardware registers (physical addresses) --------------------------- */
 #define NP_PI_DRAM_ADDR_REG 0x04600000
@@ -83,15 +84,29 @@ static void np_pi_wait(void) {
     }
 }
 
+/* Transport backend: the entire driver touches hardware through np_read /
+ * np_write / np_dma. Dom2 is the ares device window; SC64 is the register
+ * shadow bridged over USB (netpak_sc64.c), chosen once in netpak_init(). */
+#define NP_MODE_DOM2 0
+#define NP_MODE_SC64 1
+static u8 np_mode = NP_MODE_DOM2;
+
 /* Uncached 32-bit device register read/write at the TRUE physical address —
  * IO_READ/IO_WRITE go through PHYS_TO_K1, NOT osRomBase, so Domain-2 addresses
  * are hit correctly (see file header). */
 static u32 np_read(u32 off) {
+    if (np_mode == NP_MODE_SC64) {
+        return np_sc64_read(off);
+    }
     np_pi_wait();
     return IO_READ(NETPAK_BASE_PHYS + off);
 }
 
 static void np_write(u32 off, u32 v) {
+    if (np_mode == NP_MODE_SC64) {
+        np_sc64_write(off, v);
+        return;
+    }
     np_pi_wait();
     IO_WRITE(NETPAK_BASE_PHYS + off, v);
 }
@@ -100,6 +115,10 @@ static void np_write(u32 off, u32 v) {
  * (bypassing osRomBase) so cart_off is decoded in Domain 2. dir is OS_READ
  * (device -> RDRAM) or OS_WRITE (RDRAM -> device). Blocks until complete. */
 static void np_dma(s32 dir, u32 cart_off, void *dram, u32 len) {
+    if (np_mode == NP_MODE_SC64) {
+        np_sc64_dma(dir, cart_off, dram, len);
+        return;
+    }
     np_pi_wait();
     IO_WRITE(NP_PI_DRAM_ADDR_REG, osVirtualToPhysical(dram));
     IO_WRITE(NP_PI_CART_ADDR_REG, (NETPAK_BASE_PHYS + cart_off) & 0x1FFFFFFF);
@@ -493,16 +512,23 @@ void netpak_isv_print(const char* s) {
 
 s32 netpak_init(bool use_irq) {
     np_present = false;
+    np_mode = NP_MODE_DOM2;
     if (!netpak_detect()) {
-        return -1;
+        /* No Dom2 device (real console): try an SC64 + USB bridge daemon. */
+        if (np_sc64_detect() != 0) {
+            return -1;
+        }
+        np_mode = NP_MODE_SC64;
     }
 
-    /* Spec-pinned Dom2 bus timings (spec §2.1): software-owned. */
-    np_pi_wait();
-    IO_WRITE(NP_PI_BSD_DOM2_LAT_REG, 0xFF);
-    IO_WRITE(NP_PI_BSD_DOM2_PWD_REG, 0xFF);
-    IO_WRITE(NP_PI_BSD_DOM2_PGS_REG, 0x0F);
-    IO_WRITE(NP_PI_BSD_DOM2_RLS_REG, 0x03);
+    if (np_mode == NP_MODE_DOM2) {
+        /* Spec-pinned Dom2 bus timings (spec §2.1): software-owned. */
+        np_pi_wait();
+        IO_WRITE(NP_PI_BSD_DOM2_LAT_REG, 0xFF);
+        IO_WRITE(NP_PI_BSD_DOM2_PWD_REG, 0xFF);
+        IO_WRITE(NP_PI_BSD_DOM2_PGS_REG, 0x0F);
+        IO_WRITE(NP_PI_BSD_DOM2_RLS_REG, 0x03);
+    }
 
     np_ring_head = np_ring_tail = 0;
     np_rx_dropped = 0;
