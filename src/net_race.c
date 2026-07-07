@@ -1174,7 +1174,12 @@ static Camera  sCamSim1, sCamLoc1;        /* sim camera1 / local camera1 */
 static u16     sCamSimD300[4], sCamLocD300[4];
 static bool    sCamLocInit;               /* local context seeded yet? (reset per race) */
 static s32     sCamActive;                /* local slot in effect this frame (0 = none) */
-static u8      sCamLocArr[0x4E0];         /* local copy of the per-screen camera
+static u8      sCamLocArr[0x4E0];
+static u8      sCamSimArr[0x4E0];         /* sim's copy of the same region, saved
+    across the local follow by cam_push/cam_pop (dedicated — the old
+    NET_RENDER_ISOLATION save is compiled out and its buffer stays zeroed;
+    v42's first edge re-seed copied those zeros into the live arrays and
+    killed the joiner's game thread at the countdown edge). */         /* local copy of the per-screen camera
     smoothing region (D_801645D0..+0x4E0: zoom/height/angle arrays). Without it
     the joiner's follow re-read the SIM's copy every frame — smoothing state
     the sim's own follow had just computed for KART 0 — so the local camera
@@ -2349,6 +2354,7 @@ void net_lockstep_cam_push(void) {
      * kart's steering/incline dynamics (banking with the host's banking).
      * pop captures our updates back into sCamLocArr before restoring the
      * sim's copy (the sim's copy is what RENDER_ISOLATION already saves). */
+    memcpy(sCamSimArr, D_801645D0, sizeof(sCamSimArr)); /* sim copy, restored in pop */
     if (!sCamLocArrInit) {
         memcpy(sCamLocArr, D_801645D0, sizeof(sCamLocArr)); /* seed from sim once */
         sCamLocArrInit = true;
@@ -2368,6 +2374,16 @@ void net_lockstep_cam_push(void) {
         D_80152300[0] = 1;
         camera1->rot[1] = gPlayers[ls].rotation[1];
         camera1->unk_2C = gPlayers[ls].rotation[1];
+        /* v42: RE-SEED the tuning region at this edge. sCamLocArr was seeded
+         * at the FIRST render frame — during the intro flyover, when the
+         * zoom/height arrays hold sky-high intro values. The sim's copy gets
+         * reset to chase values by race-start code, but the isolated local
+         * copy never saw that reset, so the joiner raced with the intro
+         * camera altitude ("flying like lakitu", v41 on-device report). The
+         * sim's chase-ready values are in sCamArrSave (saved this same push,
+         * before the swap); adopt them once, then stay isolated. */
+        memcpy(sCamLocArr, sCamSimArr, sizeof(sCamLocArr));
+        memcpy(D_801645D0, sCamLocArr, sizeof(sCamLocArr));
     }
     /* index stays 0: it selects the per-SCREEN camera tuning state (chase distance/
      * height/zoom arrays), which 1P mode only maintains for screen 0 — passing ls
@@ -2437,12 +2453,6 @@ void net_lockstep_cam_pop(void) {
         for (pi = 0; pi < NET_MAX_SLOTS; pi++) {
             RSAVE_RS(gPlayers, pi, sPlySave[pi]);
         }
-        /* joiner: persist the LOCAL follow's smoothing updates before the
-         * sim's copy is put back (else the local camera restarts from the
-         * host-kart-driven values every frame — the v40 banking bleed) */
-        if (sCamActive != 0 && sCamLocArrInit) {
-            memcpy(sCamLocArr, D_801645D0, sizeof(sCamLocArr));
-        }
         memcpy(D_801645D0, sCamArrSave, sizeof(sCamArrSave));
         sDb4Active = false;
     }
@@ -2451,6 +2461,12 @@ void net_lockstep_cam_pop(void) {
     if (sCamActive == 0) {
         return;
     }
+    /* persist the local follow's tuning updates, then give the sim its copy
+     * back (v42 — this pair previously lived in the dead RENDER_ISOLATION
+     * block, so v41 froze the local copy at intro values: the "flying like
+     * lakitu" joiner camera). */
+    memcpy(sCamLocArr, D_801645D0, sizeof(sCamLocArr));
+    memcpy(D_801645D0, sCamSimArr, sizeof(sCamSimArr));
     blk = (u32) (LS_CPU_STATE_END - unk_cpu_vehicles_camera_path_pad);
     if (blk > LS_CAMBLK_MAX) {
         blk = LS_CAMBLK_MAX;
