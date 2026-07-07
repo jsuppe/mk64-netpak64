@@ -181,7 +181,17 @@ static bool sSyncCharsValid;      /* set once the table is agreed (GO) */
  * puppets in the CPU slots) and drop into the game's real character select. */
 extern void net_lockstep_prerace_clear(void); /* net_race.c — start-state agreement */
 
+static s32 sOnlineDelay; /* lockstep input delay for the coming race (v40):
+                          * host sizes it from the worst lobby RTT
+                          * (net_menu_pick_delay); every console adopts the
+                          * same value from START chars[1]. 0 until set;
+                          * net_lockstep_set_delay clamps to 2..8. */
+
 static void net_menu_start_race(void) {
+    extern void net_lockstep_set_delay(s32 d);
+    net_lockstep_set_delay(sOnlineDelay); /* v40: RTT-sized input delay, same
+                                           * value on every console (START
+                                           * chars[1]); 0/garbage clamps to 2 */
     net_lockstep_prerace_clear(); /* zero CPU-AI residue BEFORE the course loads */
     /* Engine substrate = GRAND_PRIX 1-player: it spawns the full 8-kart grid
      * (1 human in slot 0 + 7 CPU in slots 1-7), and the netcode overrides those
@@ -427,6 +437,9 @@ bool net_online_barrier_ready(void) {
                         m.chars[ci2] = 0;
                     }
                     m.chars[0] = (u8) sOnlineCc; /* class rides with every START */
+                    m.chars[1] = (u8) sOnlineDelay; /* same pick as the original
+                                                     * START — latecomers must
+                                                     * adopt the identical delay */
                     for (i = 0; i < nr; i++) {
                         netpak_send(roster[i].node_id, 1, &m, sizeof(m));
                     }
@@ -615,6 +628,22 @@ bool net_menu_poll_course(void) {
 static s16 sPingMs[8];   /* -1 = no measurement yet */
 static u32 sPingTick;
 static u8  sLobbyCc = 0xFF; /* class as learned from the HOST's pings (joiners) */
+
+/* Host-side: smallest input delay the slowest link can hide. One-way latency
+ * ~ worstPing/2, +10ms jitter allowance, ceil'd into 17ms frames, +1 frame of
+ * pipeline slack; floor 2 = the v39 fixed delay (loopback/LAN stays at 2). */
+static s32 net_menu_pick_delay(void) {
+    s32 i;
+    s32 worst = 0;
+    s32 d;
+    for (i = 0; i < 8; i++) {
+        if (sPingMs[i] > worst) {
+            worst = (s32) sPingMs[i];
+        }
+    }
+    d = 1 + (worst / 2 + 10 + 16) / 17;
+    return (d < 2) ? 2 : d; /* upper clamp to 8 happens at adopt */
+}
 
 static u32 ping_now_us(void) {
     extern u32 net_time_us(void);
@@ -865,6 +894,8 @@ void net_menu_update(struct Controller* controller) {
                     m.chars[ci] = 0;
                 }
                 m.chars[0] = (u8) sOnlineCc; /* engine class rides with the course */
+                sOnlineDelay = net_menu_pick_delay(); /* size once, from lobby RTTs */
+                m.chars[1] = (u8) sOnlineDelay; /* every console adopts this (v40) */
                 online_msg_send_all(&m);   /* tell the room which track to load */
                 net_menu_start_race();     /* -> character select -> locked course -> race */
             }
@@ -914,6 +945,9 @@ void net_menu_update(struct Controller* controller) {
                 net_menu_check_ver(startMsg.pad);
                 sOnlineCourse = startMsg.course; /* 0xFF = host picks on the course screen */
                 sOnlineCc = (startMsg.chars[0] <= CC_150) ? startMsg.chars[0] : CC_100;
+                /* adopt the host's input-delay pick; old hosts send 0 -> floor 2 */
+                sOnlineDelay = (startMsg.chars[1] >= 2 && startMsg.chars[1] <= 8)
+                             ? (s32) startMsg.chars[1] : 2;
                 net_online_barrier_arm_joiner(startSrc); /* host node id from START */
                 net_menu_start_race(); /* same track as the host */
                 return;
@@ -938,6 +972,8 @@ void net_menu_update(struct Controller* controller) {
                                       * CC feature -> random per-boot garbage */
                 }
                 m.chars[0] = (u8) sOnlineCc;
+                sOnlineDelay = net_menu_pick_delay();
+                m.chars[1] = (u8) sOnlineDelay;
                 online_msg_send_all(&m);
                 net_menu_start_race();
                 return;

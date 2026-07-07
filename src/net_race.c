@@ -100,7 +100,13 @@ static void net_race_menu_test(void) {
     }
     netpak_debug_poke(0xE0000000u | (u32)(gMenuSelection & 0xFF));
     switch (gMenuSelection) {
-        case 8:  /* LOGO_INTRO_MENU */
+        case 8:  /* LOGO_INTRO_MENU: press NOTHING (v40). START during the logo
+                  * is the game's hold-START-at-boot gesture and routes through
+                  * the Controller Pak menu — whose exit path wedges the game
+                  * thread on any ROM whose .main layout differs from v39's
+                  * (razor-edge clobber; root cause still open, see task #45).
+                  * The logo auto-advances to START_MENU on its own. */
+            break;
         case 10: /* START_MENU */
             press = START_BUTTON;
             break;
@@ -1022,7 +1028,26 @@ extern u16 gRandomSeed16;
 #define LS_TAG   0x4C /* 'L' */
 #define LS_RING  64   /* frames of input history buffered */
 #define LS_REDUN 6    /* frames of redundancy per packet (covers ch0 loss) */
-#define LS_DELAY 2    /* input delay (frames) */
+#define LS_DELAY sLsDelay /* input delay (frames) — RUNTIME since v40:
+    the host sizes it from the worst lobby RTT (2..8) and every console
+    adopts the same value from the START message. Bigger delay = the race
+    runs at full speed over slower links, at the cost of button latency. */
+#define LS_DELAY_MIN 2
+#define LS_DELAY_MAX 8
+static u32 sLsDelay; /* ZERO-INIT ON PURPOSE: an initialized static would be
+    net_race.o's only .data symbol — the linker routes this object's .bss to
+    netbss but has no home for .data, and the stray section re-triggers the
+    v13 boot landmine (driver init wedges). Defaulted in net_lockstep_reset. */
+
+void net_lockstep_set_delay(s32 d) {
+    if (d < LS_DELAY_MIN) {
+        d = LS_DELAY_MIN;
+    }
+    if (d > LS_DELAY_MAX) {
+        d = LS_DELAY_MAX;
+    }
+    sLsDelay = (u32) d;
+}
 
 typedef struct {
     u16  button;
@@ -1193,6 +1218,9 @@ static void net_lockstep_reset(void) {
     sLsDesync = false;
     sLsDesyncFrame = 0;
     sLsHashLastDf = 0xFFFFFFFFu;
+    if (sLsDelay < LS_DELAY_MIN || sLsDelay > LS_DELAY_MAX) {
+        sLsDelay = LS_DELAY_MIN; /* zero-init bss -> default here */
+    }
     {
         /* seed the ring with an impossible frame, NOT zero: a zeroed slot
          * claims "frame 0, hash 0", so a peer's real frame-0 hash arriving
@@ -1334,7 +1362,8 @@ void net_lockstep_tick(void) {
         if (gGamestate == RACING && gCurrentCourseId != sCcLast) {
             extern s32 gCCSelection;
             sCcLast = gCurrentCourseId;
-            netpak_debug_poke(0xCC000000u | (((u32) gCCSelection & 0xFu) << 16) |
+            netpak_debug_poke(0xCC000000u | ((sLsDelay & 0xFu) << 20) |
+                              (((u32) gCCSelection & 0xFu) << 16) |
                               ((u32) gCurrentCourseId & 0xFFu));
         }
     }

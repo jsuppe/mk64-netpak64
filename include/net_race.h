@@ -81,6 +81,7 @@ void net_render_cull_diag(void);
  * Call right after net_lockstep_cam_pop() while the display list is open. */
 void net_lockstep_desync_indicator(void);
 void net_lockstep_stall_indicator(void);
+void net_lockstep_set_delay(s32 d);
 
 /* Stall gate: true when the lockstep tick could not assemble every player's input
  * for the frame about to be simulated, so the sim must be held this render-frame

@@ -17,11 +17,18 @@ else
 fi
 
 OLD=$(md5sum build/us/mk64.us.z64 2>/dev/null | cut -c1-8 || echo none)
-if ! make NON_MATCHING=1 -j"$(nproc)" 2>&1 | grep -iE "error" ; then :; else
-  echo "BUILD FAILED"; exit 1
+set +o pipefail
+ERRS=$(make NON_MATCHING=1 -j"$(nproc)" 2>&1 | grep -icE "error" || true)
+set -o pipefail
+if [ "$ERRS" != "0" ]; then
+  make NON_MATCHING=1 -j"$(nproc)" 2>&1 | grep -iB2 "error" | head -12 || true
+  echo "BUILD FAILED ($ERRS error lines)"; exit 1
 fi
 NEW=$(md5sum build/us/mk64.us.z64 | cut -c1-8)
 echo "md5: $OLD -> $NEW"
+if [ "$NEW" = "$OLD" ]; then
+  echo "FATAL: ROM UNCHANGED after build — nothing to stage"; exit 1
+fi
 grep -q "#define NET_MENU_TEST 1" src/net_race.c && FLAGS=test || FLAGS=product
 echo "flags in ROM: $FLAGS"
 

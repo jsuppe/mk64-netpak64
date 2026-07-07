@@ -11,6 +11,43 @@
 .section .text, "ax"
 
 glabel entry_point
+# ---- v40 TAIL LOAD (root cause of the "layout landmine", tasks #33/#45): ----
+# The IPL3 boot copies EXACTLY 0x100000 bytes (PI_WR_LEN = 0xFFFFF: the
+# `addiu 0xFFFF` in boot.s sign-extends) from ROM 0x1000 to 0x80000400, and
+# nothing else ever loads the rest of the main segment. Vanilla main fit in
+# 1MB; ours outgrew it, so the tail of .data (audio tables — gNoteFrequencies
+# et al.) arrived as bss-zeros whenever the layout shifted them past
+# 0x80100400: the audio thread then FPEs (0/0) on the first menu jingle and
+# the game thread blocks forever on the audio queue. DMA the tail here,
+# before ANY game code runs. Clobbers t0-t3 only; polls PI to completion.
+.set PI_BASE_K1, 0xA4600000
+    lui   $t2, %hi(_mainSegmentEnd)
+    addiu $t2, %lo(_mainSegmentEnd)
+    lui   $t3, 0x8010
+    ori   $t3, $t3, 0x0400            # 0x80100400 = end of the IPL3-loaded 1MB
+    subu  $t2, $t2, $t3
+    blez  $t2, .Lnp_tail_done         # main fits in 1MB: nothing to load
+     lui  $t0, %hi(PI_BASE_K1)
+.Lnp_pi_wait1:
+    lw    $t1, 0x10($t0)              # PI_STATUS
+    andi  $t1, $t1, 0x3               # IO/DMA busy
+    bnez  $t1, .Lnp_pi_wait1
+     nop
+    lui   $t1, 0x0010
+    ori   $t1, $t1, 0x0400
+    sw    $t1, 0x0($t0)               # PI_DRAM_ADDR = 0x100400 (phys)
+    lui   $t1, 0x1010
+    ori   $t1, $t1, 0x1000
+    sw    $t1, 0x4($t0)               # PI_CART_ADDR = 0x10101000 (ROM 0x101000)
+    addiu $t2, $t2, -1
+    sw    $t2, 0xC($t0)               # PI_WR_LEN = len-1 -> starts the DMA
+.Lnp_pi_wait2:
+    lw    $t1, 0x10($t0)
+    andi  $t1, $t1, 0x3
+    bnez  $t1, .Lnp_pi_wait2
+     nop
+.Lnp_tail_done:
+# ---- original entry: clear bss, set up sp, jump to main_func --------------
 /* 001000 80000400 3C08800F */  lui   $t0, %hi(_mainSegmentEnd) # $t0, 0x800f
 /* 001004 80000404 3C09000A */  lui   $t1, (0x000A0FC0 >> 16) # lui $t1, 0xa
 /* 001008 80000408 25086910 */  addiu $t0, %lo(_mainSegmentEnd) # addiu $t0, $t0, 0x6910
