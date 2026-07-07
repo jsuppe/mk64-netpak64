@@ -14,7 +14,7 @@
 
 /** Build number shown on the title screen ("JSUPPE VERSION N") so a stale ROM
  *  is obvious at a glance. BUMP THIS every time a new ROM is handed out. */
-#define NETPAK_ROM_VERSION 40
+#define NETPAK_ROM_VERSION 41
 
 /** Enter the online screen fresh (called when NETWORK_VS_MENU is set up). */
 void net_menu_reset(void);

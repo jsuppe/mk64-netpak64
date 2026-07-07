@@ -1100,26 +1100,50 @@ static void draw_option(s32 x, s32 y, char* text, bool selected) {
     print_text1_center_mode_1(x, y, text, 0, 0.9f, 0.9f);
 }
 
+/* Relay status as a compact signal-bars icon (top-right, all online screens).
+ * The old centered text line crowded the screen and overlapped the lobby
+ * roster. Three ascending bars, filled bottom-up with connection progress:
+ *   red blinking short bar          = connecting to relay (driver retries forever)
+ *   two green bars  + grey stub     = relay link up, not in a room
+ *   three green bars                = link up + seated in a room
+ * Unlit bars render dark grey so the glyph always reads as a signal meter. */
+static void net_menu_relay_icon(void) {
+    static u32 tick;
+    u32 st = netpak_status();
+    s32 lit;      /* how many bars are on */
+    s32 i;
+    u32 on, off;
+    tick++;
+    if (!(st & NETPAK_STATUS_LINK_UP)) {
+        if (tick & 16) {
+            return; /* blink while connecting */
+        }
+        lit = 1;
+        on = (GPACK_RGBA5551(255, 40, 40, 1) << 16) | GPACK_RGBA5551(255, 40, 40, 1);
+    } else {
+        lit = (st & NETPAK_STATUS_SESSION) ? 3 : 2;
+        on = (GPACK_RGBA5551(40, 220, 40, 1) << 16) | GPACK_RGBA5551(40, 220, 40, 1);
+    }
+    off = (GPACK_RGBA5551(80, 80, 80, 1) << 16) | GPACK_RGBA5551(80, 80, 80, 1);
+
+    gDPPipeSync(gDisplayListHead++);
+    gDPSetRenderMode(gDisplayListHead++, G_RM_OPA_SURF, G_RM_OPA_SURF2);
+    gDPSetCycleType(gDisplayListHead++, G_CYC_FILL);
+    for (i = 0; i < 3; i++) {
+        s32 x = 288 + i * 6;            /* 4px bars, 2px gaps */
+        s32 h = 4 + i * 3;              /* heights 4/7/10, shared baseline y=26 */
+        gDPSetFillColor(gDisplayListHead++, (i < lit) ? on : off);
+        gDPFillRectangle(gDisplayListHead++, x, 26 - h, x + 4, 26);
+    }
+    gDPPipeSync(gDisplayListHead++);
+    gDPSetCycleType(gDisplayListHead++, G_CYC_1CYCLE);
+}
+
 void net_menu_render(void) {
     set_text_color(TEXT_BLUE_GREEN_RED_CYCLE_1);
     print_text1_center_mode_1(0xA0, 0x30, "ONLINE", 0, 1.2f, 1.2f);
-    { /* relay connection status, always visible on the online screens:
-         LINK_UP = the device's socket to the relay is alive; SESSION = we
-         hold a seat in a room. The driver retries the link forever, so
-         "down" reads as CONNECTING rather than a dead end. */
-        u32 st = netpak_status();
-        if (!(st & NETPAK_STATUS_LINK_UP)) {
-            set_text_color(TEXT_RED);
-            print_text1_center_mode_1(0xA0, 0x40, "CONNECTING TO RELAY...", 0, 0.5f, 0.5f);
-        } else if (!(st & NETPAK_STATUS_SESSION)) {
-            set_text_color(TEXT_GREEN);
-            print_text1_center_mode_1(0xA0, 0x40, "RELAY CONNECTED", 0, 0.5f, 0.5f);
-        } else {
-            set_text_color(TEXT_GREEN);
-            print_text1_center_mode_1(0xA0, 0x40, "RELAY CONNECTED - IN ROOM", 0, 0.5f, 0.5f);
-        }
-        set_text_color(TEXT_YELLOW);
-    }
+    net_menu_relay_icon();
+    set_text_color(TEXT_YELLOW);
 
     if (!netpak_present()) {
         set_text_color(TEXT_RED);

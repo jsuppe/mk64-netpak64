@@ -1174,6 +1174,14 @@ static Camera  sCamSim1, sCamLoc1;        /* sim camera1 / local camera1 */
 static u16     sCamSimD300[4], sCamLocD300[4];
 static bool    sCamLocInit;               /* local context seeded yet? (reset per race) */
 static s32     sCamActive;                /* local slot in effect this frame (0 = none) */
+static u8      sCamLocArr[0x4E0];         /* local copy of the per-screen camera
+    smoothing region (D_801645D0..+0x4E0: zoom/height/angle arrays). Without it
+    the joiner's follow re-read the SIM's copy every frame — smoothing state
+    the sim's own follow had just computed for KART 0 — so the local camera
+    inherited the HOST kart's steering/incline dynamics ("joiner karts bank
+    when the host banks", turning angles more extreme). Same isolation pattern
+    as sCamLoc1/sCamLocD300; sim's copy still restored by cam_pop. */
+static bool    sCamLocArrInit;
 
 typedef struct {
     u8  tag;       /* LS_TAG */
@@ -1210,6 +1218,7 @@ static void net_lockstep_reset(void) {
      * own init run on top. */
 
     sCamLocInit = false; /* fresh local-camera context each race */
+    sCamLocArrInit = false;
     sLsStall = false;
     sLsStallCount = 0;
     sBlkApplied = false;
@@ -2323,6 +2332,17 @@ void net_lockstep_cam_push(void) {
     memcpy(unk_cpu_vehicles_camera_path_pad, sCamLocBlk, blk);
     *camera1 = sCamLoc1;
     memcpy(D_80152300, sCamLocD300, sizeof(sCamLocD300));
+    /* Per-screen camera smoothing region: swap in OUR persistent copy. The
+     * sim's follow just updated this region for KART 0; running the local
+     * follow on top of that state made the joiner's camera mirror the host
+     * kart's steering/incline dynamics (banking with the host's banking).
+     * pop captures our updates back into sCamLocArr before restoring the
+     * sim's copy (the sim's copy is what RENDER_ISOLATION already saves). */
+    if (!sCamLocArrInit) {
+        memcpy(sCamLocArr, D_801645D0, sizeof(sCamLocArr)); /* seed from sim once */
+        sCamLocArrInit = true;
+    }
+    memcpy(D_801645D0, sCamLocArr, sizeof(sCamLocArr));
     camera1->playerId = (s16) ls;
 
     /* ROOT-CAUSE FIX: the intro→chase camera-mode transition (func_8001F87C) is
@@ -2405,6 +2425,12 @@ void net_lockstep_cam_pop(void) {
         }
         for (pi = 0; pi < NET_MAX_SLOTS; pi++) {
             RSAVE_RS(gPlayers, pi, sPlySave[pi]);
+        }
+        /* joiner: persist the LOCAL follow's smoothing updates before the
+         * sim's copy is put back (else the local camera restarts from the
+         * host-kart-driven values every frame — the v40 banking bleed) */
+        if (sCamActive != 0 && sCamLocArrInit) {
+            memcpy(sCamLocArr, D_801645D0, sizeof(sCamLocArr));
         }
         memcpy(D_801645D0, sCamArrSave, sizeof(sCamArrSave));
         sDb4Active = false;
