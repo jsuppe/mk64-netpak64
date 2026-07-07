@@ -1183,6 +1183,13 @@ static u8      sCamLocArr[0x4E0];         /* local copy of the per-screen camera
     as sCamLoc1/sCamLocD300; sim's copy still restored by cam_pop. */
 static bool    sCamLocArrInit;
 
+/* GDB-probe anchors: the ares debug stub reads these to find the (static)
+ * render-side camera state for cross-instance invariant checks (camprobe.py):
+ * [0]=&sCamLoc1 (joiner's local camera) [1]=&sCamSim1 (sim camera save)
+ * [2]=&sCamLocArr [3]=&sCamActive. Filled in net_lockstep_reset; no game
+ * code reads this. Lives in netbss like everything else here. */
+void* gNetProbeAnchors[4];
+
 typedef struct {
     u8  tag;       /* LS_TAG */
     u8  player;    /* sender player index (== node id) */
@@ -1218,6 +1225,10 @@ static void net_lockstep_reset(void) {
      * own init run on top. */
 
     sCamLocInit = false; /* fresh local-camera context each race */
+    gNetProbeAnchors[0] = &sCamLoc1;
+    gNetProbeAnchors[1] = &sCamSim1;
+    gNetProbeAnchors[2] = sCamLocArr;
+    gNetProbeAnchors[3] = &sCamActive;
     sCamLocArrInit = false;
     sLsStall = false;
     sLsStallCount = 0;
