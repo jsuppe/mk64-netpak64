@@ -49,6 +49,7 @@ SECTIONS
       BUILD_DIR/src/netpak_mk64.o(.text*);
       BUILD_DIR/src/net_race.o(.text*);
       BUILD_DIR/src/net_menu.o(.text*);
+      BUILD_DIR/src/usb.o(.text*);
       BUILD_DIR/src/code_800029B0.o(.text*);
       BUILD_DIR/src/profiler.o(.text*);
       BUILD_DIR/src/crash_screen.o(.text*);
@@ -166,6 +167,7 @@ SECTIONS
       BUILD_DIR/asm/os/osWritebackDCache.o(.text);
       BUILD_DIR/asm/os/osMapTLBRdb.o(.text);
       BUILD_DIR/src/os/osPiRawReadIo.o(.text*);
+      BUILD_DIR/src/os/osPiIo.o(.text*);
       BUILD_DIR/src/os/__osSetHWIntrRoutine.o(.text*);
       BUILD_DIR/src/os/__osLeoInterrupt.o(.text*);
       BUILD_DIR/src/os/osTimer.o(.text*);
@@ -221,6 +223,7 @@ SECTIONS
       BUILD_DIR/src/netpak_mk64.o(.data*);
       BUILD_DIR/src/net_race.o(.data*);
       BUILD_DIR/src/net_menu.o(.data*);
+      BUILD_DIR/src/usb.o(.data*);
       BUILD_DIR/src/code_800029B0.o(.data*);
       BUILD_DIR/src/profiler.o(.data*);
       BUILD_DIR/src/crash_screen.o(.data*);
@@ -276,6 +279,7 @@ SECTIONS
       BUILD_DIR/src/netpak_mk64.o(.rodata*);
       BUILD_DIR/src/net_race.o(.rodata*);
       BUILD_DIR/src/net_menu.o(.rodata*);
+      BUILD_DIR/src/usb.o(.rodata*);
       BUILD_DIR/src/animation.o(.rodata*);
       BUILD_DIR/src/code_800029B0.o(.rodata*);
       BUILD_DIR/src/cpu_vehicles_camera_path.jp.o(.rodata*);
@@ -401,6 +405,7 @@ SECTIONS
       BUILD_DIR/src/netpak_mk64.o(.bss*);
       BUILD_DIR/src/net_race.o(.bss*);
       BUILD_DIR/src/net_menu.o(.bss*);
+      BUILD_DIR/src/usb.o(.bss*);
       . = ALIGN(0x10);
    }
    _netbssSegmentNoloadEnd = ADDR(.netbss.noload) + SIZEOF(.netbss.noload);
