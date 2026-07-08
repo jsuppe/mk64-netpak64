@@ -89,6 +89,24 @@ u8 D_800EA0EC[] = { 0, 0, 0, 0 };
  * follows OUR kart instead of kart 0 ("all sounds come from the host").
  * Audio-side only: never read by the sim. */
 u8 gNetAudKart[4] = { 0, 1, 2, 3 };
+
+/* NetPak64: 1 while an online session is active (set by netpak_frame). Gates
+ * the kart->slot routing of one-shot trigger sounds (net_aud_slot below). */
+u8 gNetAudOnline = 0;
+
+/* Map a KART id (what player_controller passes to the one-shot trigger
+ * emitters) to the screen-player audio slot that should voice it, or -1 to
+ * suppress. Offline: identity for karts 0-3 (vanilla 1-4P behavior), suppress
+ * 4-7 (never trigger offline; online all-kart physics made them index past
+ * the 4-entry screen tables — v46 bounds fix). Online: only the LOCAL kart
+ * voices rich one-shots, through slot 0 — remote karts are presence-only via
+ * the 8-wide engine-hum path, like vanilla CPUs. */
+static s32 net_aud_slot(u8 kartId) {
+    if (gNetAudOnline) {
+        return (kartId == gNetAudKart[0]) ? 0 : -1;
+    }
+    return (kartId < 4) ? (s32) kartId : -1;
+}
 u8 D_800EA0F0 = 0;
 u8 D_800EA0F4 = 0;
 UNUSED Vec3f D_800EA0F8 = { 0.0f, 0.0f, 1.0f };
@@ -2912,39 +2930,57 @@ void func_800C8F44(u8 arg0) {
 }
 
 void func_800C8F80(u8 arg0, u32 soundBits) {
+    s32 slot = net_aud_slot(arg0); /* kart -> screen audio slot (v46) */
+    if (slot < 0) {
+        return;
+    }
     if (D_800EA108 == 0) {
-        switch (D_800EA0EC[arg0]) {
+        switch (D_800EA0EC[slot]) {
             case 2:
-                D_800EA0EC[arg0] = 1;
+                D_800EA0EC[slot] = 1;
             case 0:
-                play_sound(soundBits, &D_800E9F7C[arg0].pos, arg0, &D_800EA1D4, &D_800EA1D4, &D_800EA1DC);
+                play_sound(soundBits, &D_800E9F7C[slot].pos, (u8) slot, &D_800EA1D4, &D_800EA1D4, &D_800EA1DC);
                 break;
         }
     }
 }
 
 void func_800C9018(u8 playerIndex, u32 soundBits) {
-    func_800C5578(&D_800E9F7C[playerIndex].pos, soundBits);
+    s32 slot = net_aud_slot(playerIndex); /* kart -> screen audio slot (v46) */
+    if (slot < 0) {
+        return;
+    }
+    func_800C5578(&D_800E9F7C[slot].pos, soundBits);
 }
 
 void func_800C9060(u8 playerId, u32 soundBits) {
+    s32 slot = net_aud_slot(playerId); /* kart -> screen audio slot (v46) */
+    if (slot < 0) {
+        return;
+    }
     if (D_800EA108 == 0) {
-        switch (D_800EA0EC[playerId]) {
+        switch (D_800EA0EC[slot]) {
             case 2:
-                D_800EA0EC[playerId] = 1;
+                D_800EA0EC[slot] = 1;
             case 0:
-                play_sound(soundBits, &D_800E9F7C[playerId].pos, playerId, &D_800EA1D4, &D_800EA1D4,
-                           (s8*) &D_800E9F7C[playerId].unk_14);
+                play_sound(soundBits, &D_800E9F7C[slot].pos, (u8) slot, &D_800EA1D4, &D_800EA1D4,
+                           (s8*) &D_800E9F7C[slot].unk_14);
                 break;
         }
     }
 }
 
 void func_800C90F4(u8 playerId, u32 soundBits) {
+    /* playerId stays the KART for gPlayers/D_800E9F2C (8-wide, per-kart);
+     * the 4-wide screen tables are indexed by the routed slot (v46). */
+    s32 slot = net_aud_slot(playerId);
+    if (slot < 0) {
+        return;
+    }
     if (D_800EA108 == 0) {
-        switch (D_800EA0EC[playerId]) {
+        switch (D_800EA0EC[slot]) {
             case 2:
-                D_800EA0EC[playerId] = 1;
+                D_800EA0EC[slot] = 1;
             case 0:
                 if (((soundBits & ~0xF0) == SOUND_ARG_LOAD(0x29, 0x00, 0x80, 0x03)) ||
                     ((soundBits & ~0xF0) == SOUND_ARG_LOAD(0x29, 0x00, 0x80, 0x04)) ||
@@ -2953,11 +2989,11 @@ void func_800C90F4(u8 playerId, u32 soundBits) {
                 }
                 if (((gPlayers[playerId].effects & LIGHTNING_EFFECT) == LIGHTNING_EFFECT) &&
                     ((s32) D_800E9F2C[playerId] >= 0x1F)) {
-                    play_sound(soundBits, &D_800E9F7C[playerId].pos, playerId, &D_800EA150, &D_800EA1D4,
-                               (s8*) &D_800E9F7C[playerId].unk_14);
+                    play_sound(soundBits, &D_800E9F7C[slot].pos, (u8) slot, &D_800EA150, &D_800EA1D4,
+                               (s8*) &D_800E9F7C[slot].unk_14);
                 } else {
-                    play_sound(soundBits, &D_800E9F7C[playerId].pos, playerId, &D_800EA1D4, &D_800EA1D4,
-                               (s8*) &D_800E9F7C[playerId].unk_14);
+                    play_sound(soundBits, &D_800E9F7C[slot].pos, (u8) slot, &D_800EA1D4, &D_800EA1D4,
+                               (s8*) &D_800E9F7C[slot].unk_14);
                 }
                 break;
             default:

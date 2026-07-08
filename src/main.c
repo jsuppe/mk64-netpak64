@@ -1298,11 +1298,17 @@ UNUSED static void netpak_launch_race(void) {
 static void netpak_frame(void) {
     { /* v45: outside an online session the kart-audio remap must be identity
        * (offline races vanilla). Online, net_lockstep_cam_pop re-points slot 0
-       * at the local kart every rendered frame, overriding this. */
+       * at the local kart every rendered frame, overriding this. v46 adds
+       * gNetAudOnline, which routes one-shot trigger sounds (local kart ->
+       * slot 0, remote karts suppressed) on host and joiner alike. */
         extern u8 gNetAudKart[4];
+        extern u8 gNetAudOnline;
         extern bool net_menu_online_active(void);
         if (!net_menu_online_active()) {
             gNetAudKart[0] = 0;
+            gNetAudOnline = 0;
+        } else {
+            gNetAudOnline = 1;
         }
     }
     if (!netpak_present()) {
