@@ -111,17 +111,19 @@ static void net_menu_check_ver(u8 pad) {
 }
 
 enum OnlineMenuState {
-    OM_MAIN,       /* HOST GAME / JOIN GAME / NAME */
+    OM_MAIN,       /* HOST GAME / JOIN GAME / FIND GAME / NAME */
     OM_HOST_CC,    /* host-only: pick 50/100/150cc before opening the room */
+    OM_HOST_VIS,   /* host-only: PRIVATE (code-only) or PUBLIC (listed) room */
     OM_HOSTING,    /* created a room; showing code, waiting for players */
     OM_JOIN_ENTRY, /* dialing in a code */
     OM_JOINED,     /* joined a room; waiting for the host to start */
-    OM_NAME_ENTRY  /* editing the player name */
+    OM_NAME_ENTRY, /* editing the player name */
+    OM_FIND        /* browsing public rooms (LIST_GAMES, v47) */
 };
-#define OM_MAIN_OPTIONS 3 /* HOST / JOIN / NAME */
+#define OM_MAIN_OPTIONS 4 /* HOST / JOIN / FIND / NAME */
 
 static s32  sState;
-static s32  sSel;             /* OM_MAIN cursor: 0 = HOST, 1 = JOIN, 2 = NAME */
+static s32  sSel;             /* OM_MAIN cursor: 0 HOST, 1 JOIN, 2 FIND, 3 NAME */
 static char sCode[8];         /* room code (create result or join entry) */
 static s32  sCcSel = CC_100;  /* host's engine-class pick (50/100/150cc) */
 static s32  sOnlineCc = CC_100; /* class this race runs at (synced via START) */
@@ -132,6 +134,13 @@ static s32  sNamePos;         /* OM_NAME_ENTRY cursor 0..NAME_LEN-1 */
 static void name_load(void);
 static s32  sNodeId;          /* our node id after create/join */
 static s32  sLastErr;         /* last session errno (0 = ok) for display */
+
+/* FIND GAME browse results + host visibility pick (v47). */
+#define FIND_MAX 10
+static netpak_game_t sGames[FIND_MAX];
+static s32  sGameCount;       /* entries held in sGames */
+static s32  sGameSel;         /* OM_FIND cursor */
+static s32  sHostPublic;      /* OM_HOST_VIS: 0 = private (default), 1 = public */
 
 /* Lobby roster (peers other than us), refreshed periodically from the device
  * (netpak_peers reads the device-local peer table — no relay round-trip). */
@@ -718,6 +727,9 @@ void net_menu_reset(void) {
     sPeerCount = 0;
     sPeerPoll = 0;
     sCourseSel = 0;
+    sGameCount = 0;
+    sGameSel = 0;
+    sHostPublic = 0;
     sOnlineArmed = false;
     sOnlineActive = false;
     for (i = 0; i < CODE_LEN; i++) {
@@ -836,7 +848,7 @@ void net_menu_update(struct Controller* controller) {
                 func_online_fade(); /* leave the online screen -> main menu */
                 play_sound2(SOUND_MENU_GO_BACK);
             } else if (btn & A_BUTTON) {
-                if (sSel == 2) { /* NAME: edit the player name */
+                if (sSel == 3) { /* NAME: edit the player name */
                     sNamePos = 0;
                     name_load();
                     sState = OM_NAME_ENTRY;
@@ -848,12 +860,66 @@ void net_menu_update(struct Controller* controller) {
                         sState = OM_HOST_CC;
                         play_sound2(SOUND_MENU_SELECT);
                     }
+                } else if (sSel == 2) { /* FIND GAME: browse public rooms */
+                    if (netpak_present() && (netpak_status() & NETPAK_STATUS_LINK_UP)) {
+                        s32 n;
+                        sLastErr = 0;
+                        n = netpak_list_games(sGames, FIND_MAX);
+                        sGameCount = (n < 0) ? 0 : ((n < FIND_MAX) ? n : FIND_MAX);
+                        if (n < 0) {
+                            sLastErr = -n;
+                        }
+                        sGameSel = 0;
+                        sState = OM_FIND;
+                        play_sound2(SOUND_MENU_SELECT);
+                    }
                 } else { /* JOIN: always dial the code in (pre-filled from the
                           * launch code when one was given) — joining a room is
                           * an explicit act, never automatic. */
                     sEntryPos = 0;
                     sState = OM_JOIN_ENTRY;
                     play_sound2(SOUND_MENU_SELECT);
+                }
+            }
+            break;
+
+        case OM_FIND:
+            if ((btn & U_JPAD) && sGameSel > 0) {
+                sGameSel--;
+                play_sound2(SOUND_MENU_CURSOR_MOVE);
+            }
+            if ((btn & D_JPAD) && sGameSel < sGameCount - 1) {
+                sGameSel++;
+                play_sound2(SOUND_MENU_CURSOR_MOVE);
+            }
+            if (btn & R_TRIG) { /* refresh the listing */
+                s32 n = netpak_list_games(sGames, FIND_MAX);
+                sGameCount = (n < 0) ? 0 : ((n < FIND_MAX) ? n : FIND_MAX);
+                sGameSel = 0;
+                play_sound2(SOUND_MENU_SELECT);
+            }
+            if (btn & B_BUTTON) {
+                sState = OM_MAIN;
+                play_sound2(SOUND_MENU_GO_BACK);
+            } else if ((btn & A_BUTTON) && sGameCount > 0) {
+                /* join the highlighted room by its code */
+                s32 i;
+                sLastErr = 0;
+                for (i = 0; i < CODE_LEN; i++) {
+                    char c = sGames[sGameSel].code[i];
+                    sCode[i] = (c != '\0') ? c : kCodeAlphabet[0];
+                }
+                sCode[CODE_LEN] = '\0';
+                sNodeId = netpak_session_join(sCode);
+                if (sNodeId >= 0) {
+                    /* Room gone between LIST and JOIN -> join-or-create made
+                     * us node 0: take the host lobby (same rule as JOIN). */
+                    sState = (sNodeId == 0) ? OM_HOSTING : OM_JOINED;
+                    play_sound2(SOUND_MENU_OK_CLICKED);
+                } else {
+                    sLastErr = -sNodeId;
+                    sState = OM_MAIN;
+                    play_sound2(SOUND_MENU_GO_BACK);
                 }
             }
             break;
@@ -872,14 +938,34 @@ void net_menu_update(struct Controller* controller) {
             if (btn & B_BUTTON) {
                 sState = OM_MAIN;
                 play_sound2(SOUND_MENU_GO_BACK);
-            } else if (btn & A_BUTTON) { /* class locked -> open the room */
+            } else if (btn & A_BUTTON) { /* class locked -> visibility pick */
+                sHostPublic = 0; /* private is always the default */
+                sState = OM_HOST_VIS;
+                play_sound2(SOUND_MENU_SELECT);
+            }
+            break;
+
+        case OM_HOST_VIS:
+            /* PRIVATE: only the code admits players (vanilla-private, like
+             * every room before v47). PUBLIC: the room is listed by FIND
+             * GAME on this relay until it empties. */
+            if (btn & (U_JPAD | D_JPAD)) {
+                sHostPublic ^= 1;
+                play_sound2(SOUND_MENU_CURSOR_MOVE);
+            }
+            if (btn & B_BUTTON) {
+                sState = OM_HOST_CC;
+                play_sound2(SOUND_MENU_GO_BACK);
+            } else if (btn & A_BUTTON) { /* open the room */
                 if (netpak_present() && (netpak_status() & NETPAK_STATUS_LINK_UP)) {
                     sLastErr = 0;
                     /* With a launch code, join-or-create that exact room so
                      * the joiner can use the same code; else create a fresh
                      * random room and show its code. */
-                    sNodeId = sHavePreset ? netpak_session_join(sCode)
-                                          : netpak_session_create(sCode);
+                    sNodeId = sHavePreset
+                        ? netpak_session_join(sCode)
+                        : netpak_session_create_flags(
+                              sCode, sHostPublic ? NETPAK_CREATE_PUBLIC : 0);
                     if (sNodeId >= 0) {
                         sState = OM_HOSTING;
                         play_sound2(SOUND_MENU_OK_CLICKED);
@@ -1203,15 +1289,65 @@ void net_menu_render(void) {
             }
             nameRow[n] = '\0';
 
-            draw_option(0xA0, 0x68, "HOST GAME", sSel == 0);
-            draw_option(0xA0, 0x80, "JOIN GAME", sSel == 1);
-            draw_option(0xA0, 0x98, nameRow, sSel == 2);
+            draw_option(0xA0, 0x60, "HOST GAME", sSel == 0);
+            draw_option(0xA0, 0x74, "JOIN GAME", sSel == 1);
+            draw_option(0xA0, 0x88, "FIND GAME", sSel == 2);
+            draw_option(0xA0, 0x9C, nameRow, sSel == 3);
             if (sLastErr) {
                 set_text_color(TEXT_RED);
                 print_text1_center_mode_1(0xA0, 0xB0, "CONNECTION FAILED", 0, 0.7f, 0.7f);
             }
             set_text_color(TEXT_YELLOW);
             print_text1_center_mode_1(0xA0, 0xC4, "B  BACK", 0, 0.7f, 0.7f);
+            break;
+        }
+
+        case OM_HOST_VIS:
+            set_text_color(TEXT_GREEN);
+            print_text1_center_mode_1(0xA0, 0x54, "GAME VISIBILITY", 0, 0.8f, 0.8f);
+            draw_option(0xA0, 0x70, "PRIVATE  CODE ONLY", sHostPublic == 0);
+            draw_option(0xA0, 0x88, "PUBLIC  LISTED", sHostPublic == 1);
+            set_text_color(TEXT_YELLOW);
+            print_text1_center_mode_1(0xA0, 0xB4, "A  HOST GAME", 0, 0.7f, 0.7f);
+            print_text1_center_mode_1(0xA0, 0xC4, "B  BACK", 0, 0.7f, 0.7f);
+            break;
+
+        case OM_FIND: {
+            s32 i;
+            s32 y = 0x64;
+            set_text_color(TEXT_GREEN);
+            print_text1_center_mode_1(0xA0, 0x4C, "FIND GAME", 0, 0.8f, 0.8f);
+            if (sGameCount == 0) {
+                set_text_color(TEXT_YELLOW);
+                print_text1_center_mode_1(0xA0, 0x80, "NO PUBLIC GAMES", 0, 0.7f, 0.7f);
+            }
+            for (i = 0; i < sGameCount; i++) {
+                /* "CODE6  nP  HOSTNAME" as one centered row */
+                char row[32];
+                s32 n = 0, k;
+                for (k = 0; k < CODE_LEN && sGames[i].code[k]; k++) {
+                    row[n++] = sGames[i].code[k];
+                }
+                row[n++] = ' ';
+                row[n++] = ' ';
+                row[n++] = (char) ('0' + (sGames[i].players & 7));
+                row[n++] = 'P';
+                row[n++] = ' ';
+                row[n++] = ' ';
+                for (k = 0; k < 12 && sGames[i].host[k]; k++) {
+                    char c = sGames[i].host[k];
+                    if (c >= 'a' && c <= 'z') {
+                        c = (char) (c - 'a' + 'A'); /* menu font is uppercase */
+                    }
+                    row[n++] = c;
+                }
+                row[n] = '\0';
+                draw_option(0xA0, y, row, i == sGameSel);
+                y += 0xC;
+            }
+            set_text_color(TEXT_YELLOW);
+            print_text1_center_mode_1(0xA0, 0xB8, "A  JOIN   R  REFRESH", 0, 0.6f, 0.6f);
+            print_text1_center_mode_1(0xA0, 0xC8, "B  BACK", 0, 0.7f, 0.7f);
             break;
         }
 

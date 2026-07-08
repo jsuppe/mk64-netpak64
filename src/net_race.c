@@ -183,16 +183,18 @@ static void net_race_menu_test(void) {
             }
             netpak_debug_poke(0xF0000000u | (u32)(onlineStep & 0xFF));
             if (doRename) {
-                switch (onlineStep) {
+                switch (onlineStep) { /* v47: FIND GAME sits between JOIN and NAME */
                     case 1: press = D_JPAD;        break; /* cursor HOST -> JOIN */
-                    case 2: press = D_JPAD;        break; /* JOIN -> NAME */
-                    case 3: press = A_BUTTON;      break; /* open the name editor */
-                    case 4: press = U_JPAD;        break; /* PLAYER -> QLAYER */
-                    case 5: press = A_BUTTON;      break; /* save -> SET_IDENTITY */
-                    case 6: press = U_JPAD;        break; /* cursor NAME -> JOIN */
-                    case 7: press = A_BUTTON;      break; /* JOIN -> code entry (pre-filled) */
-                    case 8: press = A_BUTTON;      break; /* confirm code -> OM_JOINED */
-                    case 13: press = START_BUTTON; break; /* self-start -> character select */
+                    case 2: press = D_JPAD;        break; /* JOIN -> FIND */
+                    case 3: press = D_JPAD;        break; /* FIND -> NAME */
+                    case 4: press = A_BUTTON;      break; /* open the name editor */
+                    case 5: press = U_JPAD;        break; /* PLAYER -> QLAYER */
+                    case 6: press = A_BUTTON;      break; /* save -> SET_IDENTITY */
+                    case 7: press = U_JPAD;        break; /* cursor NAME -> FIND */
+                    case 8: press = U_JPAD;        break; /* FIND -> JOIN */
+                    case 9: press = A_BUTTON;      break; /* JOIN -> code entry (pre-filled) */
+                    case 10: press = A_BUTTON;     break; /* confirm code -> OM_JOINED */
+                    case 15: press = START_BUTTON; break; /* self-start -> character select */
                 }
             } else {
                 switch (onlineStep) {

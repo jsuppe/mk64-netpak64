@@ -130,6 +130,23 @@ typedef struct {
  *  assigned node id (>= 0); negative errno otherwise. */
 s32 netpak_session_create(char code_out[8]);
 
+/** SESSION_CREATE flags (ARG0, spec §5.1). */
+#define NETPAK_CREATE_PUBLIC 0x1 /* list the room in FIND GAME (LIST_GAMES) */
+
+/** netpak_session_create with explicit flags (NETPAK_CREATE_*). */
+s32 netpak_session_create_flags(char code_out[8], u32 flags);
+
+/** One FIND GAME entry: a public room on the connected relay (spec §8.7). */
+typedef struct {
+    char code[8];  /**< 6-char join code, NUL-terminated */
+    u8   players;  /**< current member count */
+    char host[16]; /**< host player name, NUL-terminated */
+} netpak_game_t;
+
+/** Browse public rooms (LIST_GAMES). Fills up to max entries and returns the
+ *  relay's total count (entries beyond max are dropped), or negative errno. */
+s32 netpak_list_games(netpak_game_t *out, s32 max);
+
 /** Join a room by 6-char code (join-or-create in v0.9). Returns node id or
  *  negative errno. */
 s32 netpak_session_join(const char *code);

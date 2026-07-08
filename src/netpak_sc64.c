@@ -74,7 +74,7 @@
 
 #define NPS_CMD_BUSY 0x01
 
-#define NPS_CMD_DATA_SIZE 0x100 /* LIST_PEERS worst case: 8 peers x 24 B */
+#define NPS_CMD_DATA_SIZE 0x200 /* worst case: LIST_GAMES 16 rooms x 28 B */
 #define NPS_RING_DEPTH 16       /* matches the device's RX ring (spec §4) */
 
 typedef struct {

@@ -700,8 +700,17 @@ static s32 np_cmd(u8 opcode) {
 }
 
 s32 netpak_session_create(char code_out[8]) {
+    return netpak_session_create_flags(code_out, 0);
+}
+
+s32 netpak_session_create_flags(char code_out[8], u32 flags) {
     s32 i;
-    s32 rc = np_cmd(0x02); /* SESSION_CREATE */
+    s32 rc;
+    /* ARG0 doubles as the debug-poke scratch register, so it holds garbage —
+     * write the flags explicitly EVERY create or a stale poke could publish a
+     * private room (bit0 = PUBLIC, spec §5.1). */
+    np_write(NP_REG_ARG0, flags);
+    rc = np_cmd(0x02); /* SESSION_CREATE */
     if (rc != 0) {
         return rc;
     }
@@ -772,6 +781,39 @@ s32 netpak_peers(netpak_peer_t *out, s32 max) {
             out[i].name[w + 3] = (char)v;
         }
         out[i].name[15] = '\0';
+    }
+    return count;
+}
+
+s32 netpak_list_games(netpak_game_t *out, s32 max) {
+    s32 count, n, i, w;
+    s32 rc = np_cmd(0x09); /* LIST_GAMES */
+    if (rc != 0) {
+        return rc;
+    }
+    count = (s32) np_read(NP_REG_RES0);
+    n = count < max ? count : max;
+    for (i = 0; i < n; i++) {
+        /* 28-byte entries: {code[8] NUL-padded, players u8, pad3, host[16]} */
+        u32 base = NP_REG_CMD_DATA + (u32) i * 28;
+        for (w = 0; w < 8; w += 4) {
+            u32 v = np_read(base + (u32) w);
+            out[i].code[w + 0] = (char) (v >> 24);
+            out[i].code[w + 1] = (char) (v >> 16);
+            out[i].code[w + 2] = (char) (v >> 8);
+            out[i].code[w + 3] = (char) v;
+        }
+        out[i].code[6] = '\0';
+        out[i].code[7] = '\0';
+        out[i].players = (u8) (np_read(base + 8) >> 24);
+        for (w = 0; w < 16; w += 4) {
+            u32 v = np_read(base + 12 + (u32) w);
+            out[i].host[w + 0] = (char) (v >> 24);
+            out[i].host[w + 1] = (char) (v >> 16);
+            out[i].host[w + 2] = (char) (v >> 8);
+            out[i].host[w + 3] = (char) v;
+        }
+        out[i].host[15] = '\0';
     }
     return count;
 }
