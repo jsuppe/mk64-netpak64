@@ -81,6 +81,14 @@ struct Unk_800EA06C D_800EA06C[] = { { { 0.0f, 1.0f, 1.0f }, 0 }, { { 0.0f, 1.0f
                                      { { 0.0f, 1.0f, 1.0f }, 0 }, { { 0.0f, 1.0f, 1.0f }, 0 },
                                      { { 0.0f, 1.0f, 1.0f }, 0 }, { { 0.0f, 1.0f, 1.0f }, 0 } };
 u8 D_800EA0EC[] = { 0, 0, 0, 0 };
+
+/* NetPak64: which KART each screen-player audio slot listens to. Identity
+ * offline (vanilla behavior untouched). On an online joiner, net_race.c
+ * points slot 0 at the LOCAL kart each frame, so the whole per-screen-player
+ * kart-audio subsystem (engine/exhaust/skid/boost, func_800C8CCC loop)
+ * follows OUR kart instead of kart 0 ("all sounds come from the host").
+ * Audio-side only: never read by the sim. */
+u8 gNetAudKart[4] = { 0, 1, 2, 3 };
 u8 D_800EA0F0 = 0;
 u8 D_800EA0F4 = 0;
 UNUSED Vec3f D_800EA0F8 = { 0.0f, 0.0f, 1.0f };
@@ -1825,7 +1833,7 @@ void func_800C5CB8(void) {
 }
 
 void func_800C5D04(u8 playerId) {
-    if ((gPlayers[playerId].kartProps & THROTTLE) == THROTTLE) {
+    if ((gPlayers[gNetAudKart[playerId]].kartProps & THROTTLE) == THROTTLE) {
         D_800E9E34[playerId] = 0;
         if (D_800E9E24[playerId] < 0x4E20) {
             if ((u8) D_800EA16C == 0) {
@@ -1854,7 +1862,7 @@ void func_800C5D04(u8 playerId) {
 
 void func_800C5E38(u8 playerId) {
     if (D_800EA108 == 0) {
-        if (((gPlayers[playerId].kartProps & THROTTLE) != THROTTLE) && (gPlayers[playerId].unk_098 > 400.0f)) {
+        if (((gPlayers[gNetAudKart[playerId]].kartProps & THROTTLE) != THROTTLE) && (gPlayers[gNetAudKart[playerId]].unk_098 > 400.0f)) {
             D_800E9E14[playerId] = 1;
             if (D_800EA0EC[playerId] == 0) {
                 D_800E9F7C[playerId].unk_10 = 0.6f - D_800E9F54[playerId];
@@ -1866,7 +1874,7 @@ void func_800C5E38(u8 playerId) {
                     case 2:
                         D_800EA0EC[playerId] = 1;
                     case 0:
-                        if ((D_800E9F74[playerId] == 0) && (gPlayers[playerId].characterId != 3)) {
+                        if ((D_800E9F74[playerId] == 0) && (gPlayers[gNetAudKart[playerId]].characterId != 3)) {
                             if ((s32) D_800EA1C0 < 2) {
                                 play_sound(SOUND_ARG_LOAD(0x01, 0x00, 0xF9, 0x26), &D_800E9F7C[playerId].pos, playerId,
                                            &D_800E9F7C[playerId].unk_38, &D_800E9F04[playerId],
@@ -1904,7 +1912,7 @@ void func_800C5E38(u8 playerId) {
 void func_800C6108(u8 playerId) {
     Player* player;
 
-    player = &gPlayers[playerId];
+    player = &gPlayers[gNetAudKart[playerId]];
     D_800E9E64[playerId] = (player->unk_098 / D_800E9DC4[playerId]) + D_800E9DD4[playerId];
     if ((player->unk_098 < 1800.0f) && ((player->kartProps & THROTTLE) != THROTTLE)) {
         D_800E9E64[playerId] = (player->unk_098 / D_800E9F7C[playerId].unk_34) + D_800E9F7C[playerId].unk_28;
@@ -1917,7 +1925,7 @@ void func_800C6108(u8 playerId) {
     } else {
         D_800E9DE4[playerId] = 0.0f;
     }
-    if (gPlayers[playerId].unk_0C0 > 0) {
+    if (gPlayers[gNetAudKart[playerId]].unk_0C0 > 0) {
         D_800E9E54[playerId] = (f32) player->unk_0C0;
     } else {
         D_800E9E54[playerId] = (f32) -player->unk_0C0;
@@ -1969,7 +1977,7 @@ void func_800C6108(u8 playerId) {
 void func_800C64A0(u8 playerId) {
     switch (D_800E9E74[playerId]) {
         case 3:
-            D_800E9EF4[playerId] = (gPlayers[playerId].speed / 5.0f) + 0.2f;
+            D_800E9EF4[playerId] = (gPlayers[gNetAudKart[playerId]].speed / 5.0f) + 0.2f;
             break;
         case 1:
         case 13:
@@ -1992,7 +2000,7 @@ void func_800C64A0(u8 playerId) {
         case 29:
         case 30:
         case 31:
-            D_800E9EF4[playerId] = (gPlayers[playerId].speed / 5.0f) + 0.2f;
+            D_800E9EF4[playerId] = (gPlayers[gNetAudKart[playerId]].speed / 5.0f) + 0.2f;
             break;
         default:
             D_800E9EF4[playerId] = 1.0f;
@@ -2004,7 +2012,7 @@ void func_800C64A0(u8 playerId) {
     if (D_800E9EF4[playerId] < 0.0f) {
         D_800E9EF4[playerId] = 0.0f;
     }
-    if ((gPlayers[playerId].kartProps & THROTTLE) == THROTTLE) {
+    if ((gPlayers[gNetAudKart[playerId]].kartProps & THROTTLE) == THROTTLE) {
         D_800E9F04[playerId] = 0.56f - (D_800E9E24[playerId] * 0.06f);
     } else {
         D_800E9F04[playerId] = (D_800E9E34[playerId] / 50.0f) + 0.25f;
@@ -2020,7 +2028,7 @@ void func_800C64A0(u8 playerId) {
 void func_800C6758(u8 playerId) {
     switch (D_800E9E74[playerId]) { /* irregular */
         case 3:
-            D_800E9F14[playerId] = (gPlayers[playerId].speed / 9.0f) + 0.6f;
+            D_800E9F14[playerId] = (gPlayers[gNetAudKart[playerId]].speed / 9.0f) + 0.6f;
             break;
         case 2:
         case 13:
@@ -2192,9 +2200,9 @@ void func_800C683C(u8 cameraId) {
 void func_800C70A8(u8 playerId) {
     if (D_800EA0EC[playerId] == 0) {
         D_800E9E74[playerId] = 0;
-        if ((D_800E9E54[playerId] > 3500.0f) || ((gPlayers[playerId].effects & DRIFTING_EFFECT) == DRIFTING_EFFECT)) {
+        if ((D_800E9E54[playerId] > 3500.0f) || ((gPlayers[gNetAudKart[playerId]].effects & DRIFTING_EFFECT) == DRIFTING_EFFECT)) {
             D_800E9E74[playerId] = 1;
-            switch (gPlayers[playerId].tyres[AUDIO_LEFT_TYRE].surfaceType) {
+            switch (gPlayers[gNetAudKart[playerId]].tyres[AUDIO_LEFT_TYRE].surfaceType) {
                 case DIRT: /* switch 1 */
                     D_800E9E74[playerId] = 0x0000000D;
                     break;
@@ -2224,9 +2232,9 @@ void func_800C70A8(u8 playerId) {
                     break;
             }
         }
-        if ((gPlayers[playerId].effects & DRIFTING_EFFECT) == DRIFTING_EFFECT) {
+        if ((gPlayers[gNetAudKart[playerId]].effects & DRIFTING_EFFECT) == DRIFTING_EFFECT) {
             D_800E9E74[playerId] = 2;
-            switch (gPlayers[playerId].tyres[AUDIO_LEFT_TYRE].surfaceType) { /* switch 2 */
+            switch (gPlayers[gNetAudKart[playerId]].tyres[AUDIO_LEFT_TYRE].surfaceType) { /* switch 2 */
                 case DIRT:                                                   /* switch 2 */
                     D_800E9E74[playerId] = 0x0000000D;
                     break;
@@ -2256,7 +2264,7 @@ void func_800C70A8(u8 playerId) {
                     break;
             }
         }
-        switch (gPlayers[playerId].tyres[AUDIO_LEFT_TYRE].surfaceType) { /* switch 3 */
+        switch (gPlayers[gNetAudKart[playerId]].tyres[AUDIO_LEFT_TYRE].surfaceType) { /* switch 3 */
             case GRASS:                                                  /* switch 3 */
                 if (D_800E9E74[playerId] == 6) {
                     D_800E9E74[playerId] = 4;
@@ -2316,7 +2324,7 @@ void func_800C70A8(u8 playerId) {
                 D_800E9E74[playerId] = 0x0000001B;
                 break;
         }
-        switch (gPlayers[playerId].tyres[AUDIO_RIGHT_TYRE].surfaceType) { /* switch 4 */
+        switch (gPlayers[gNetAudKart[playerId]].tyres[AUDIO_RIGHT_TYRE].surfaceType) { /* switch 4 */
             case GRASS:                                                   /* switch 4 */
                 if (D_800E9E74[playerId] == 5) {
                     D_800E9E74[playerId] = 4;
@@ -2376,24 +2384,24 @@ void func_800C70A8(u8 playerId) {
                 D_800E9E74[playerId] = 0x0000001B;
                 break;
         }
-        if (((gPlayers[playerId].speed < 0.5f) || ((gPlayers[playerId].effects & MIDAIR_EFFECT) == MIDAIR_EFFECT)) &&
+        if (((gPlayers[gNetAudKart[playerId]].speed < 0.5f) || ((gPlayers[gNetAudKart[playerId]].effects & MIDAIR_EFFECT) == MIDAIR_EFFECT)) &&
             (D_800E9E74[playerId] != 0x0000001C)) {
             D_800E9E74[playerId] = 0;
         }
-        if ((((gPlayers[playerId].effects & EARLY_START_SPINOUT_EFFECT) == EARLY_START_SPINOUT_EFFECT) &&
-             ((gPlayers[playerId].type & PLAYER_START_SEQUENCE) != PLAYER_START_SEQUENCE)) ||
-            ((gPlayers[playerId].effects & BANANA_NEAR_SPINOUT_EFFECT) == BANANA_NEAR_SPINOUT_EFFECT) ||
-            ((gPlayers[playerId].effects & BANANA_SPINOUT_EFFECT) == BANANA_SPINOUT_EFFECT) ||
-            ((gPlayers[playerId].effects & DRIVING_SPINOUT_EFFECT) == DRIVING_SPINOUT_EFFECT) ||
-            ((gPlayers[playerId].kartProps & DRIVING_NEAR_SPINOUT) == DRIVING_NEAR_SPINOUT)) {
+        if ((((gPlayers[gNetAudKart[playerId]].effects & EARLY_START_SPINOUT_EFFECT) == EARLY_START_SPINOUT_EFFECT) &&
+             ((gPlayers[gNetAudKart[playerId]].type & PLAYER_START_SEQUENCE) != PLAYER_START_SEQUENCE)) ||
+            ((gPlayers[gNetAudKart[playerId]].effects & BANANA_NEAR_SPINOUT_EFFECT) == BANANA_NEAR_SPINOUT_EFFECT) ||
+            ((gPlayers[gNetAudKart[playerId]].effects & BANANA_SPINOUT_EFFECT) == BANANA_SPINOUT_EFFECT) ||
+            ((gPlayers[gNetAudKart[playerId]].effects & DRIVING_SPINOUT_EFFECT) == DRIVING_SPINOUT_EFFECT) ||
+            ((gPlayers[gNetAudKart[playerId]].kartProps & DRIVING_NEAR_SPINOUT) == DRIVING_NEAR_SPINOUT)) {
             D_800E9E74[playerId] = 0x00000012;
         }
-        if ((((gPlayers[playerId].effects & AB_SPIN_EFFECT) == AB_SPIN_EFFECT) &&
-             ((gPlayers[playerId].type & PLAYER_START_SEQUENCE) != PLAYER_START_SEQUENCE)) ||
-            ((gPlayers[playerId].effects & BANANA_NEAR_SPINOUT_EFFECT) == BANANA_NEAR_SPINOUT_EFFECT)) {
+        if ((((gPlayers[gNetAudKart[playerId]].effects & AB_SPIN_EFFECT) == AB_SPIN_EFFECT) &&
+             ((gPlayers[gNetAudKart[playerId]].type & PLAYER_START_SEQUENCE) != PLAYER_START_SEQUENCE)) ||
+            ((gPlayers[gNetAudKart[playerId]].effects & BANANA_NEAR_SPINOUT_EFFECT) == BANANA_NEAR_SPINOUT_EFFECT)) {
             D_800E9E74[playerId] = 0x00000013;
         }
-        if (gPlayers[playerId].unk_20C != 0.0f) {
+        if (gPlayers[gNetAudKart[playerId]].unk_20C != 0.0f) {
             D_800E9E74[playerId] = 3;
         }
     }
@@ -2425,12 +2433,12 @@ void func_800C76C0(u8 playerId) {
                         func_800C3448(0x100100FF);
                         func_800C3448(0x110100FF);
                         func_800C5278(5U);
-                        if (gPlayers[playerId].currentRank == 0) {
+                        if (gPlayers[gNetAudKart[playerId]].currentRank == 0) {
                             func_800C97C4(playerId);
                             D_800EA0F0 = 2;
                             func_800C9A88(playerId);
                             play_sequences(SEQ_EVENT_RACE_FINISH_FIRST, SEQ_MENU_RESULTS_SCREEN_WIN);
-                        } else if (gPlayers[playerId].currentRank < 4) {
+                        } else if (gPlayers[gNetAudKart[playerId]].currentRank < 4) {
                             func_800C97C4(playerId);
                             D_800EA0F0 = 2;
                             func_800C9A88(playerId);
@@ -2442,14 +2450,14 @@ void func_800C76C0(u8 playerId) {
                     } else {
                         D_800EA0EC[playerId] = 2;
                         func_800C9060(playerId, 0x1900F103U);
-                        if (gPlayers[playerId].currentRank == 0) {
+                        if (gPlayers[gNetAudKart[playerId]].currentRank == 0) {
                             func_800C3448(0x100100FF);
                             func_800C3448(0x110100FF);
                             func_800C97C4(playerId);
                             D_800EA0F0 = 2;
                             func_800C9A88(playerId);
                             play_sequences(SEQ_EVENT_RACE_FINISH_FIRST, SEQ_MENU_RESULTS_SCREEN_WIN);
-                        } else if (gPlayers[playerId].currentRank < 4) {
+                        } else if (gPlayers[gNetAudKart[playerId]].currentRank < 4) {
                             if (D_800EA104 == 0) {
                                 func_800C3448(0x100100FF);
                                 func_800C3448(0x110100FF);
@@ -2589,43 +2597,43 @@ void func_800C76C0(u8 playerId) {
                 case BATTLE:          /* switch 3 */
                     break;
                 case GRAND_PRIX: /* switch 3 */
-                    if (gPlayers[playerId].currentRank == 0) {
+                    if (gPlayers[gNetAudKart[playerId]].currentRank == 0) {
                         D_800EA0EC[playerId] = 2;
                         func_800C90F4(playerId,
-                                      (gPlayers[playerId].characterId * 0x10) + SOUND_ARG_LOAD(0x29, 0x00, 0x80, 0x07));
-                    } else if (gPlayers[playerId].currentRank < 4) {
+                                      (gPlayers[gNetAudKart[playerId]].characterId * 0x10) + SOUND_ARG_LOAD(0x29, 0x00, 0x80, 0x07));
+                    } else if (gPlayers[gNetAudKart[playerId]].currentRank < 4) {
                         D_800EA0EC[playerId] = 2;
                         func_800C90F4(playerId,
-                                      (gPlayers[playerId].characterId * 0x10) + SOUND_ARG_LOAD(0x29, 0x00, 0x80, 0x0D));
+                                      (gPlayers[gNetAudKart[playerId]].characterId * 0x10) + SOUND_ARG_LOAD(0x29, 0x00, 0x80, 0x0D));
                     } else {
                         D_800EA0EC[playerId] = 2;
                         func_800C90F4(playerId,
-                                      (gPlayers[playerId].characterId * 0x10) + SOUND_ARG_LOAD(0x29, 0x00, 0x80, 0x03));
+                                      (gPlayers[gNetAudKart[playerId]].characterId * 0x10) + SOUND_ARG_LOAD(0x29, 0x00, 0x80, 0x03));
                     }
                     break;
                 case VERSUS: /* switch 3 */
-                    if (gPlayers[playerId].currentRank == 0) {
+                    if (gPlayers[gNetAudKart[playerId]].currentRank == 0) {
                         D_800EA0EC[playerId] = 2;
                         func_800C90F4(playerId,
-                                      (gPlayers[playerId].characterId * 0x10) + SOUND_ARG_LOAD(0x29, 0x00, 0x80, 0x0D));
+                                      (gPlayers[gNetAudKart[playerId]].characterId * 0x10) + SOUND_ARG_LOAD(0x29, 0x00, 0x80, 0x0D));
                     }
                     break;
                 case TIME_TRIALS: /* switch 3 */
                     if (D_801657E5 == 1) {
                         D_800EA0EC[playerId] = 2;
                         func_800C90F4(playerId,
-                                      (gPlayers[playerId].characterId * 0x10) + SOUND_ARG_LOAD(0x29, 0x00, 0x80, 0x07));
+                                      (gPlayers[gNetAudKart[playerId]].characterId * 0x10) + SOUND_ARG_LOAD(0x29, 0x00, 0x80, 0x07));
                     } else if (D_8018ED90 == (u8) 1) {
                         D_800EA0EC[playerId] = 2;
                         func_800C90F4(playerId,
-                                      (gPlayers[playerId].characterId * 0x10) + SOUND_ARG_LOAD(0x29, 0x00, 0x80, 0x0D));
+                                      (gPlayers[gNetAudKart[playerId]].characterId * 0x10) + SOUND_ARG_LOAD(0x29, 0x00, 0x80, 0x0D));
                     }
                     break;
             }
         }
         switch (gModeSelection) { /* switch 4; irregular */
             case GRAND_PRIX:      /* switch 4 */
-                if (gPlayers[playerId].currentRank == 0) {
+                if (gPlayers[gNetAudKart[playerId]].currentRank == 0) {
                     if (D_800E9EA4[playerId] >= 0x15F) {
                         if (D_800E9EA4[playerId] == 0x0000015F) {
                             func_800C9D0C(playerId);
@@ -2633,7 +2641,7 @@ void func_800C76C0(u8 playerId) {
                     } else {
                         D_800EA130[playerId] = (f32) D_800E9EA4[playerId] / 400.0f;
                     }
-                } else if (gPlayers[playerId].currentRank < 4) {
+                } else if (gPlayers[gNetAudKart[playerId]].currentRank < 4) {
                     if (D_800E9EA4[playerId] >= 0x15F) {
                         if (D_800E9EA4[playerId] == 0x0000015F) {
                             func_800C9D0C(playerId);
@@ -2689,7 +2697,7 @@ void func_800C76C0(u8 playerId) {
 }
 
 void func_800C847C(u8 playerId) {
-    if ((gPlayers[playerId].oobProps & UNDER_OOB_OR_FLUID_LEVEL) == UNDER_OOB_OR_FLUID_LEVEL) {
+    if ((gPlayers[gNetAudKart[playerId]].oobProps & UNDER_OOB_OR_FLUID_LEVEL) == UNDER_OOB_OR_FLUID_LEVEL) {
         if (D_800E9F74[playerId] == 0) {
             if ((s32) D_800EA1C0 < 2) {
                 func_800C9018(playerId, SOUND_ARG_LOAD(0x01, 0x00, 0xF9, 0x26));
@@ -2705,7 +2713,7 @@ void func_800C847C(u8 playerId) {
                  (gCurrentCourseId == COURSE_ROYAL_RACEWAY) || (gCurrentCourseId == COURSE_SHERBET_LAND) ||
                  (gCurrentCourseId == COURSE_DK_JUNGLE) || (gCurrentCourseId == COURSE_BIG_DONUT)) &&
                 (D_800EA0EC[playerId] == 0)) {
-                play_sound((gPlayers[playerId].characterId * 0x10) + SOUND_ARG_LOAD(0x29, 0x00, 0x80, 0x05),
+                play_sound((gPlayers[gNetAudKart[playerId]].characterId * 0x10) + SOUND_ARG_LOAD(0x29, 0x00, 0x80, 0x05),
                            &D_800E9F7C[playerId].pos, playerId, &D_800EA1D4, &D_800EA1D4,
                            (s8*) &D_800E9F7C[playerId].unk_14);
             }
@@ -2717,7 +2725,7 @@ void func_800C847C(u8 playerId) {
             func_800C94A4(playerId);
             D_800E9F74[playerId] = 0;
             if ((gCurrentCourseId == COURSE_KOOPA_BEACH) && (D_800EA0EC[playerId] == 0)) {
-                play_sound((gPlayers[playerId].characterId * 0x10) + SOUND_ARG_LOAD(0x29, 0x00, 0x80, 0x08),
+                play_sound((gPlayers[gNetAudKart[playerId]].characterId * 0x10) + SOUND_ARG_LOAD(0x29, 0x00, 0x80, 0x08),
                            &D_800E9F7C[playerId].pos, playerId, &D_800EA1D4, &D_800EA1D4,
                            (s8*) &D_800E9F7C[playerId].unk_14);
             }
@@ -2726,8 +2734,8 @@ void func_800C847C(u8 playerId) {
 }
 
 void func_800C86D8(u8 playerId) {
-    if (((gPlayers[playerId].effects & LIGHTNING_EFFECT) != LIGHTNING_EFFECT) && (D_800E9F24[playerId] == 1)) {
-        func_800C90F4(playerId, (gPlayers[playerId].characterId * 0x10) + SOUND_ARG_LOAD(0x29, 0x00, 0x80, 0x08));
+    if (((gPlayers[gNetAudKart[playerId]].effects & LIGHTNING_EFFECT) != LIGHTNING_EFFECT) && (D_800E9F24[playerId] == 1)) {
+        func_800C90F4(playerId, (gPlayers[gNetAudKart[playerId]].characterId * 0x10) + SOUND_ARG_LOAD(0x29, 0x00, 0x80, 0x08));
     }
 }
 
@@ -2996,7 +3004,7 @@ void func_800C94A4(u8 playerId) {
             case 0:
                 D_800E9F7C[playerId].unk_0C = 1.0f;
                 D_800E9F7C[playerId].unk_10 = 0.0f;
-                switch (gPlayers[playerId].characterId) {
+                switch (gPlayers[gNetAudKart[playerId]].characterId) {
                     case 0:
                     case 1:
                         D_800E9F7C[playerId].unk_18 = 2.8f;
@@ -3051,7 +3059,7 @@ void func_800C94A4(u8 playerId) {
                         D_800E9F7C[playerId].unk_34 = 4805.0f;
                         break;
                 }
-                var_a0 = gPlayers[playerId].characterId + 0x0104FF00;
+                var_a0 = gPlayers[gNetAudKart[playerId]].characterId + 0x0104FF00;
                 switch (D_800E9F74[playerId]) { /* switch 1; irregular */
                     case 0:                     /* switch 1 */
                         if (D_800EA1C0 != 0) {
@@ -3079,11 +3087,11 @@ void func_800C94A4(u8 playerId) {
 }
 
 void func_800C97C4(u8 arg0) {
-    func_800C5578(&D_800E9F7C[arg0].pos, gPlayers[arg0].characterId + SOUND_ARG_LOAD(0x01, 0x04, 0xFF, 0x00));
-    func_800C5578(&D_800E9F7C[arg0].pos, gPlayers[arg0].characterId + SOUND_ARG_LOAD(0x01, 0x04, 0xFF, 0x14));
-    func_800C5578(&D_800E9F7C[arg0].pos, gPlayers[arg0].characterId + SOUND_ARG_LOAD(0x01, 0x04, 0xFF, 0x2E));
-    func_800C5578(&D_800E9F7C[arg0].pos, gPlayers[arg0].characterId + SOUND_ARG_LOAD(0x01, 0x04, 0xFF, 0x36));
-    func_800C5578(&D_800E9F7C[arg0].pos, gPlayers[arg0].characterId + SOUND_ARG_LOAD(0x01, 0x04, 0xFF, 0x3E));
+    func_800C5578(&D_800E9F7C[arg0].pos, gPlayers[gNetAudKart[arg0]].characterId + SOUND_ARG_LOAD(0x01, 0x04, 0xFF, 0x00));
+    func_800C5578(&D_800E9F7C[arg0].pos, gPlayers[gNetAudKart[arg0]].characterId + SOUND_ARG_LOAD(0x01, 0x04, 0xFF, 0x14));
+    func_800C5578(&D_800E9F7C[arg0].pos, gPlayers[gNetAudKart[arg0]].characterId + SOUND_ARG_LOAD(0x01, 0x04, 0xFF, 0x2E));
+    func_800C5578(&D_800E9F7C[arg0].pos, gPlayers[gNetAudKart[arg0]].characterId + SOUND_ARG_LOAD(0x01, 0x04, 0xFF, 0x36));
+    func_800C5578(&D_800E9F7C[arg0].pos, gPlayers[gNetAudKart[arg0]].characterId + SOUND_ARG_LOAD(0x01, 0x04, 0xFF, 0x3E));
 }
 
 void func_800C98B8(Vec3f position, Vec3f velocity, u32 soundBits) {

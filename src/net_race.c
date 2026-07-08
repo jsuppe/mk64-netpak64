@@ -363,6 +363,10 @@ u32 net_time_us(void) {
 
 void net_race_reset(void) {
     s32 i;
+    { /* audio slot 0 back to kart 0 — offline races must be vanilla (v45) */
+        extern u8 gNetAudKart[4];
+        gNetAudKart[0] = 0;
+    }
     bzero(sRemote, sizeof(sRemote));
     bzero(sPeerNode, sizeof(sPeerNode));
     bzero(sPeerUsed, sizeof(sPeerUsed));
@@ -2419,7 +2423,12 @@ void net_lockstep_cam_pop(void) {
      * listening to the host's audio"). Menus reset the pointer to camera1
      * (func_800C2474), so refresh every frame during the race. */
     if (net_lockstep_local_slot() != 0 && sCamLocInit) {
+        extern u8 gNetAudKart[4];
         gCopyCamera[0] = &sCamLoc1;
+        /* ...and the per-screen-player kart-audio subsystem (engine, exhaust,
+         * skids — audio/external.c func_800C8CCC loop) reads OUR kart, not
+         * kart 0 ("all the sounds I hear are coming from the host", v45). */
+        gNetAudKart[0] = (u8) net_lockstep_local_slot();
     }
 
 #if NET_MENU_TEST || NET_DIAG

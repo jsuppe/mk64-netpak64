@@ -1296,6 +1296,15 @@ UNUSED static void netpak_launch_race(void) {
  * before net_race_frame() so netpak_poll() has drained the device into the
  * driver ring that net_race reads. */
 static void netpak_frame(void) {
+    { /* v45: outside an online session the kart-audio remap must be identity
+       * (offline races vanilla). Online, net_lockstep_cam_pop re-points slot 0
+       * at the local kart every rendered frame, overriding this. */
+        extern u8 gNetAudKart[4];
+        extern bool net_menu_online_active(void);
+        if (!net_menu_online_active()) {
+            gNetAudKart[0] = 0;
+        }
+    }
     if (!netpak_present()) {
         return;
     }
