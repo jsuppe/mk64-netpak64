@@ -173,15 +173,66 @@ static void net_race_menu_test(void) {
             static s32 onlineStep;
             static s32 doRename = -1;
             static s32 isAlice;
+            static s32 isCarol;
+            static s32 havePreset;
             if (doRename < 0) {
                 char nm[16];
+                char rc_[8];
                 netpak_get_name(nm);
                 doRename = (nm[0] == 'p' && nm[1] == 'l' && nm[2] == 'a' && nm[3] == 'y' &&
                             nm[4] == 'e' && nm[5] == 'r' && nm[6] == '\0');
                 isAlice = (nm[0] == 'a' && nm[1] == 'l' && nm[2] == 'i' && nm[3] == 'c' &&
                            nm[4] == 'e' && nm[5] == '\0');
+                isCarol = (nm[0] == 'c' && nm[1] == 'a' && nm[2] == 'r' && nm[3] == 'o' &&
+                           nm[4] == 'l' && nm[5] == '\0');
+                netpak_get_room_code(rc_);
+                havePreset = (rc_[0] != '\0');
             }
             netpak_debug_poke(0xF0000000u | (u32)(onlineStep & 0xFF));
+            if (!havePreset) {
+                /* FIND GAME e2e mode (v47, no NP64_ROOM): carol HOSTs a PUBLIC
+                 * game through the class + visibility screens; everyone else
+                 * browses FIND GAME and joins the first listing. Dwell on the
+                 * browser so harness screenshots can catch it rendered. */
+                if (isCarol) {
+                    switch (onlineStep) {
+                        case 1: press = A_BUTTON; break; /* HOST -> class pick */
+                        case 2: press = A_BUTTON; break; /* 100cc -> visibility */
+                        case 3: press = D_JPAD;   break; /* PRIVATE -> PUBLIC */
+                        case 4: press = A_BUTTON; break; /* create -> OM_HOSTING */
+                        default:
+                            /* start once a finder has joined (or give up late) */
+                            if (onlineStep >= 12 && (onlineStep % 4) == 0) {
+                                if (net_menu_player_count() >= 2 || onlineStep >= 150) {
+                                    press = START_BUTTON;
+                                }
+                            }
+                            break;
+                    }
+                } else {
+                    switch (onlineStep) {
+                        case 1: press = D_JPAD;   break; /* HOST -> JOIN */
+                        case 2: press = D_JPAD;   break; /* JOIN -> FIND */
+                        case 6: press = A_BUTTON; break; /* -> OM_FIND (lists) */
+                        case 12: press = R_TRIG;  break; /* refresh (dwell) */
+                        case 18: press = R_TRIG;  break; /* refresh (dwell) */
+                        case 24: press = A_BUTTON; break; /* join top listing */
+                        default:
+                            /* until the join lands: keep refreshing, then
+                             * retry A. Both are no-ops once in OM_JOINED. */
+                            if (onlineStep > 24 && (onlineStep % 6) == 0) {
+                                press = R_TRIG;
+                            } else if (onlineStep > 24 && (onlineStep % 6) == 3) {
+                                press = A_BUTTON;
+                            }
+                            break;
+                    }
+                    /* if the join landed we're in OM_JOINED; extra R/A are
+                     * no-ops there and carol's START drives the rest */
+                }
+                onlineStep++;
+                break;
+            }
             if (doRename) {
                 switch (onlineStep) { /* v47: FIND GAME sits between JOIN and NAME */
                     case 1: press = D_JPAD;        break; /* cursor HOST -> JOIN */
