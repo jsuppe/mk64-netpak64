@@ -1116,6 +1116,27 @@ typedef struct {
                  * instantly divergent with real differing inputs. */
 } LsInput;
 static LsInput sLsInput[NET_MAX_SLOTS][LS_RING]; /* [player][frame % LS_RING] */
+
+#if NET_DIAG
+/* INPUT TAPE (task #35 instrumentation): every applied input, all 8 karts,
+ * per logical frame — the whole race as a replayable movie (the sim is
+ * deterministic, so tape + course + chars reproduces it bit-for-bit).
+ * Lives in Expansion Pak RAM above the nettext overlay (0x80430000-0x80432650
+ * region); the stock game never touches 0x80400000+. Dumped offline via the
+ * ares GDB stub (tapedump.py) or, later, over the SC64 USB link; tape2m64.py
+ * converts to Mupen .m64. Layout: header, then frames x 8 karts x 4 bytes
+ * {btn_hi, btn_lo, stickX, stickY}. */
+typedef struct {
+    u32 magic;   /* 'NTP1' */
+    u32 frames;  /* highest df written + 1 */
+    u32 players; /* active participant count at race start */
+    u32 course;  /* course id, for the .m64 header / replay setup */
+} NetTapeHdr;
+#define NET_TAPE_HDR  ((volatile NetTapeHdr*) 0x80440000)
+#define NET_TAPE_DATA ((u8*) 0x80440010)
+#define NET_TAPE_MAX_FRAMES 20000 /* x8x4 = 640KB, ends well under RDRAM_END */
+#define NET_TAPE_MAGIC 0x4E545031u
+#endif
 static u16     sLsPrevBtn[NET_MAX_SLOTS]; /* last APPLIED buttons per player (edge derivation) */
 static s32     sLsMyPlayer = -1;
 static u32     sLsFrame;
@@ -1265,6 +1286,15 @@ typedef struct {
 } LsPacket;
 
 static void net_lockstep_reset(void) {
+#if NET_DIAG
+    {
+        extern s16 gCurrentCourseId;
+        NET_TAPE_HDR->magic = NET_TAPE_MAGIC;
+        NET_TAPE_HDR->frames = 0;
+        NET_TAPE_HDR->players = 0; /* stamped when the drive loop first runs */
+        NET_TAPE_HDR->course = (u32) (u16) gCurrentCourseId;
+    }
+#endif
     bzero(sLsInput, sizeof(sLsInput));
     bzero(sLsPrevBtn, sizeof(sLsPrevBtn));
     bzero(sLsDropped, sizeof(sLsDropped));
@@ -2024,6 +2054,22 @@ void net_lockstep_tick(void) {
                 gControllers[i].rawStickX = s->stickX;
                 gControllers[i].rawStickY = s->stickY;
                 sLsPrevBtn[i] = cur;
+#if NET_DIAG
+                /* input tape: record the APPLIED input (post drop-neutral) */
+                if (df < NET_TAPE_MAX_FRAMES) {
+                    u8* t = NET_TAPE_DATA + ((u32) df * 8u + (u32) i) * 4u;
+                    t[0] = (u8) (cur >> 8);
+                    t[1] = (u8) cur;
+                    t[2] = (u8) s->stickX;
+                    t[3] = (u8) s->stickY;
+                    if ((u32) df + 1u > NET_TAPE_HDR->frames) {
+                        NET_TAPE_HDR->frames = (u32) df + 1u;
+                    }
+                    if (NET_TAPE_HDR->players == 0) {
+                        NET_TAPE_HDR->players = (u32) np;
+                    }
+                }
+#endif
             }
 
             /* validation A: hash the applied input SET for df (tag 0x74/0x75). */
