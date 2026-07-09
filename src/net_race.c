@@ -2277,16 +2277,14 @@ void net_lockstep_tick(void) {
                 }
             }
 
-            /* Particle-pool neutralization: the four per-kart particle pools
-             * (Player+0x258..0xD98, drift dust/sparks) are updated by the RENDER
-             * path at render rate — confirmed diverging across consoles at ~303
-             * (10x stride-0x48 diffs) ahead of the 310 kart split. Too big to
-             * snapshot (23KB would starve the heap), so zero them pre-sim every
-             * ready frame: deterministic on all consoles; render still draws
-             * fresh single-frame particles. */
-            for (i = 0; i < NUM_PLAYERS; i++) {
-                bzero(gPlayers[i].particlePool0, 0xB40);
-            }
+            /* Particle pools: the per-frame bzero that used to live here (the
+             * pre-v42 fix for the ~303 render-rate divergence) killed every
+             * multi-frame kart effect online — exhaust animation, drift
+             * sparks, skid smoke, feedback text. The v42 render pacing locks
+             * render:sim 1:1, which makes ALL render-phase writes (including
+             * these pools) schedule-deterministic by construction, so the
+             * neutralization is no longer needed. Verified by a green
+             * cross-console hash campaign with effects live (v50). */
 
             /* drive every player kart from the delayed frame's inputs. Button edges
              * derive from the last APPLIED buttons (sLsPrevBtn), not a ring lookup
