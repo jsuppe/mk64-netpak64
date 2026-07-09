@@ -424,16 +424,23 @@ endef
 
 # Override commmands for GCC Safe Files
 ifeq ($(GCC),1)
+  # GCC_OPT: opt level for the GCC-compiled safe files. -O3 overflows the
+  # .main segment size limit (task #33) as of v51; -O2 fits.
+  GCC_OPT ?= -O2
+  # Debug-mode note (2026-07-09): GCC=1 used to imply ENABLE_DEBUG_MODE via
+  # defines.h, whose title-screen quick-start hijacked START and looked like
+  # a string of GCC miscompiles. Fixed in defines.h; the full safe set works.
+  GCC_GAME_FILES := $(SAFE_C_FILES)
   $(BUILD_DIR)/src/main.o:                          OPT_FLAGS := -g
   $(BUILD_DIR)/src/racing/skybox_and_splitscreen.o: OPT_FLAGS := -g
   $(BUILD_DIR)/src/racing/render_courses.o:         OPT_FLAGS := -g
-  $(SAFE_C_FILES): OPT_FLAGS := -O3
-  $(SAFE_C_FILES): CC        := $(CROSS)gcc
-  $(SAFE_C_FILES): MIPSISET  := -mips3
-  $(SAFE_C_FILES): CFLAGS    := -G 0 $(OPT_FLAGS) $(TARGET_CFLAGS) $(MIPSISET) $(DEF_INC_CFLAGS) -mno-shared -march=vr4300 -mfix4300 -mabi=32 -mhard-float \
+  $(GCC_GAME_FILES): OPT_FLAGS := $(GCC_OPT)
+  $(GCC_GAME_FILES): CC        := $(CROSS)gcc
+  $(GCC_GAME_FILES): MIPSISET  := -mips3
+  $(GCC_GAME_FILES): CFLAGS    := -G 0 $(OPT_FLAGS) $(TARGET_CFLAGS) $(MIPSISET) $(DEF_INC_CFLAGS) -mno-shared -march=vr4300 -mfix4300 -mabi=32 -mhard-float \
    -mdivide-breaks -fno-stack-protector -fno-common -fno-zero-initialized-in-bss -fno-PIC -mno-abicalls -fno-strict-aliasing -fno-inline-functions          \
    -ffreestanding -fwrapv -Wall -Wextra -ffast-math -fno-unsafe-math-optimizations
-  $(SAFE_C_FILES): CC_CHECK := gcc -m32
+  $(GCC_GAME_FILES): CC_CHECK := gcc -m32
 endif
 
 

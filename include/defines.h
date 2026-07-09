@@ -37,7 +37,10 @@
  * D-pad DOWN  = MARIO
  *
  */
-#if defined(GCC) || defined(DEBUG)
+/* Debug mode no longer rides along with GCC builds: it hijacks START at the
+ * title (debug quick-start straight into a race), which silently breaks the
+ * menu flow / online autopilot on perf builds. Opt in with DEBUG. */
+#if defined(DEBUG)
 #define ENABLE_DEBUG_MODE 1
 #else
 #define ENABLE_DEBUG_MODE 0
