@@ -433,3 +433,19 @@ void np_perf_sample(void) {
     }
     acc[0] += 1;
 }
+
+/* Section brackets for the sim-cost breakdown (perf roadmap): buckets at
+ * 0x8052F900, u64 sumCycles per section. Sections: 0 world-update
+ * (func_802909F0), 1 player-actor collision, 2 course actors, 3 camera
+ * (func_8001EE98), 4 kart physics (func_80028F70), 5 misc race calls,
+ * 6 netpak_frame, 7 net_lockstep_tick. */
+static OSTime sPerfMark[12];
+
+void np_perf_enter(s32 k) {
+    sPerfMark[k] = osGetTime();
+}
+
+void np_perf_leave(s32 k) {
+    volatile u64* sum = (volatile u64*) (0x8052F900 + k * 8);
+    *sum += osGetTime() - sPerfMark[k];
+}

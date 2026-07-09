@@ -580,6 +580,9 @@ void game_init_clear_framebuffer(void) {
     clear_framebuffer(0);
 }
 
+extern void np_perf_enter(s32 k); /* netpak_sc64.c perf brackets */
+extern void np_perf_leave(s32 k);
+
 void race_logic_loop(void) {
     s16 i;
     u16 rotY;
@@ -618,12 +621,16 @@ void race_logic_loop(void) {
     if (sNumVBlanks < 0) {
         sNumVBlanks = 1;
     }
+    np_perf_enter(9);
     func_802A4EF4();
+    np_perf_leave(9);
 
     switch (gActiveScreenMode) {
         case SCREEN_MODE_1P:
             gTickSpeed = 2;
+            np_perf_enter(8);
             replays_loop();
+            np_perf_leave(8);
             /* Lockstep stall gate: hold the sim this render-frame when a peer input
              * for the frame to simulate hasn't arrived (both consoles freeze in
              * sync). Render still runs below, so the frozen scene keeps drawing.
@@ -633,24 +640,40 @@ void race_logic_loop(void) {
                     if (D_8015011E) {
                         gCourseTimer += COURSE_TIMER_ITER;
                     }
+                    np_perf_enter(0);
                     func_802909F0();
+                    np_perf_leave(0);
+                    np_perf_enter(1);
                     evaluate_collision_for_players_and_actors();
+                    np_perf_leave(1);
                     handle_a_press_for_all_players_during_race();
                     /* Online lockstep: 1P GP routes drive input to player 0 only;
                      * run the same handler for the other human slots so remote
                      * players' karts actually drive (identical on every console). */
                     net_lockstep_drive_humans();
+                    np_perf_enter(3);
                     func_8001EE98(gPlayerOneCopy, camera1, 0);
+                    np_perf_leave(3);
+                    np_perf_enter(4);
                     func_80028F70();
+                    np_perf_leave(4);
+                    np_perf_enter(5);
                     func_8028F474();
                     func_80059AC8();
+                    np_perf_leave(5);
+                    np_perf_enter(2);
                     update_course_actors();
                     course_update_water();
                     func_8028FCBC();
+                    np_perf_leave(2);
                 }
+                np_perf_enter(10);
                 func_80022744();
+                np_perf_leave(10);
             }
+            np_perf_enter(11);
             func_8005A070();
+            np_perf_leave(11);
             sNumVBlanks = 0;
             profiler_log_thread5_time(LEVEL_SCRIPT_EXECUTE);
             D_8015F788 = 0;
@@ -1348,7 +1371,9 @@ void thread5_game_loop(UNUSED void* arg) {
 
     while (true) {
         func_800CB2C4();
+        np_perf_enter(6);
         netpak_frame();
+        np_perf_leave(6);
 
         // Update the gamestate if it has changed (racing, menus, credits, etc.).
         if (gGamestateNext != gGamestate) {
@@ -1359,7 +1384,9 @@ void thread5_game_loop(UNUSED void* arg) {
         config_gfx_pool();
         read_controllers();
         net_race_autodrive(); // demo: drive the local kart so netplay is visible
+        np_perf_enter(7);
         net_lockstep_tick();  // online lockstep: exchange inputs + drive all karts (no-op offline)
+        np_perf_leave(7);
         game_state_handler();
         end_master_display_list();
         display_and_vsync();
