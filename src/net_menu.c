@@ -199,6 +199,19 @@ static s32 sOnlineDelay; /* lockstep input delay for the coming race (v40):
 
 static void net_menu_start_race(void) {
     extern void net_lockstep_set_delay(s32 d);
+    extern bool net_replay_armed(void);
+    extern s32 net_replay_course(void);
+    extern s32 net_replay_cc(void);
+    extern s32 net_replay_delay(void);
+    if (net_replay_armed()) {
+        /* TAPE REPLAY (host a room ALONE, then START): the recorded race's
+         * start parameters override whatever this lobby picked — course, cc
+         * and delay must match the recording or the sim forks immediately.
+         * The roster is served by net_menu_take_synced_chars below. */
+        sOnlineDelay = net_replay_delay();
+        sOnlineCc = net_replay_cc();
+        sOnlineCourse = (u8) net_replay_course();
+    }
     net_lockstep_set_delay(sOnlineDelay); /* v40: RTT-sized input delay, same
                                            * value on every console (START
                                            * chars[1]); 0/garbage clamps to 2 */
@@ -315,7 +328,20 @@ static void build_sync_chars(void) {
  * agreed table — the caller then skips its RNG-consuming random roster, which
  * would otherwise consume the shared sim RNG differently per console. */
 bool net_menu_take_synced_chars(s8* humanChar, s16* cpuChars) {
+    extern bool net_replay_armed(void);
+    extern void net_replay_get_chars(u8* out8);
     s32 i;
+    if (sOnlineActive && net_replay_armed()) {
+        /* TAPE REPLAY: spawn the RECORDED roster, not this lobby's picks —
+         * characterId feeds kart physics, so it is part of the start state. */
+        u8 rc[8];
+        net_replay_get_chars(rc);
+        *humanChar = (s8) rc[0];
+        for (i = 0; i < 7; i++) {
+            cpuChars[i] = (s16) rc[i + 1];
+        }
+        return true;
+    }
     if (!sOnlineActive || !sSyncCharsValid) {
         return false;
     }

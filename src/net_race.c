@@ -1028,7 +1028,30 @@ static void net_race_debug_state(void) {
  * net_race_frame up in thread5 — provably ticks on every rendered race frame).
  * Always defined so main.c can call it unconditionally; a no-op unless NET_DEBUG.
  * Its own counter, so it doesn't depend on net_race's sRaceFrames. */
+u32 net_lockstep_frame(void); /* forward: defined with the lockstep module */
+
 void net_race_debug_tick(void) {
+#if NET_DIAG
+    /* RAM ring @0x8052E800: one 16B entry per race_logic_loop entry (first 128
+     * RACING frames), dumped over the GDB stub — frame-by-frame launch story.
+     * [idx @0x8052E7FC] entry: {gamestate u16, raceTicks u16, kart0 posZ u32,
+     * kart0 speed u32, kart0 type u16, stall|pause u16} */
+    {
+        volatile u32* ridx = (volatile u32*) 0x8052E7FC;
+        if (*ridx < 128) {
+            u32* e = (u32*) (0x8052E800 + *ridx * 16);
+            e[0] = ((u32) (u16) gGamestate << 16) |
+                   ((*(volatile u32*) 0x8052E210 & 0xFFu) << 8) | /* reset count */
+                   ((u32) net_lockstep_frame() & 0xFFu);          /* sLsFrame */
+            memcpy(&e[1], &gPlayers[0].pos[2], 4);
+            memcpy(&e[2], &gPlayers[0].speed, 4);
+            e[3] = ((u32) (u16) gPlayers[0].type << 16) |
+                   ((u32) (net_lockstep_stalled() ? 1 : 0) << 1) |
+                   (u32) (gIsGamePaused ? 1 : 0);
+            *ridx += 1;
+        }
+    }
+#endif
 #if NET_DEBUG
     static u32 rf;
     static u16 lastType = 0xFFFF;
@@ -1127,15 +1150,99 @@ static LsInput sLsInput[NET_MAX_SLOTS][LS_RING]; /* [player][frame % LS_RING] */
  * converts to Mupen .m64. Layout: header, then frames x 8 karts x 4 bytes
  * {btn_hi, btn_lo, stickX, stickY}. */
 typedef struct {
-    u32 magic;   /* 'NTP1' */
-    u32 frames;  /* highest df written + 1 */
-    u32 players; /* active participant count at race start */
-    u32 course;  /* course id, for the .m64 header / replay setup */
+    u32 magic;    /* 'NTP2' = recorded tape; 'NTPR' = armed for REPLAY (tapeload.py) */
+    u32 frames;   /* highest df written + 1 */
+    u32 players;  /* active participant count at race start */
+    u32 course;   /* course id, for the .m64 header / replay setup */
+    u32 delay;    /* sLsDelay the race ran with — replay must reuse it: it sets
+                   * how many sim ticks map to df=0 during the entry ramp */
+    u32 cc;       /* gCCSelection (CPU speeds depend on it -> part of start state) */
+    u8  chars[8]; /* per-slot character ids at race start (drives spawn on replay) */
+    u32 hashes;   /* hash-lane entries written (one per 16 df, see NET_TAPE_HASH) */
+    /* REPLAY VERDICT, updated live while a replay runs (osSyncPrintf/ISV is
+     * unreliable on ares, so the harness reads these over the GDB stub):
+     * rsvd[0] = 'RUN!' while replaying, 'DONE' once the tape end is reached;
+     * rsvd[1] = hash-lane entries checked; rsvd[2] = mismatches (0 = exact). */
+    u32 rsvd[3];  /* also pads the header to 0x30 so data stays 16-aligned */
 } NetTapeHdr;
+#define NET_TAPE_VERDICT_RUN  0x52554E21u /* 'RUN!' */
+#define NET_TAPE_VERDICT_DONE 0x444F4E45u /* 'DONE' */
 #define NET_TAPE_HDR  ((volatile NetTapeHdr*) 0x80440000)
-#define NET_TAPE_DATA ((u8*) 0x80440010)
+#define NET_TAPE_DATA ((u8*) 0x80440030)
 #define NET_TAPE_MAX_FRAMES 20000 /* x8x4 = 640KB, ends well under RDRAM_END */
-#define NET_TAPE_MAGIC 0x4E545031u
+#define NET_TAPE_MAGIC 0x4E545032u /* 'NTP2' */
+#define NET_TAPE_ARMED 0x4E545052u /* 'NTPR' */
+/* Sim-hash lane: the recorder stores the first-eval sim hash of every 16th df
+ * so a replay can assert bit-exactness against the original run (not just "it
+ * looked right"). Sized for NET_TAPE_MAX_FRAMES/16; sits above the tape data
+ * (ends ~0x804DC450) in RAM the stock game never touches. */
+#define NET_TAPE_HASH ((u32*) 0x80520000)
+#define NET_TAPE_HASH_MAX (NET_TAPE_MAX_FRAMES / 16)
+/* Per-kart sub-hash lane (8 u32 per check, same cadence as NET_TAPE_HASH):
+ * lets a replay divergence name the kart(s) that split. 1250 x 32B = 40000B,
+ * 0x80522000..0x8052BC40. */
+#define NET_TAPE_KHASH ((u32*) 0x80522000)
+/* df=0 spawn fingerprint: the raw fld[8] rows of all 8 karts (256B). The
+ * recorder stores its rows at +0; a replay stores ITS OWN at +0x100 — the
+ * harness diffs the two over the GDB stub to name the exact field that
+ * differs when a replay diverges at the first frame. */
+#define NET_TAPE_FP  ((u32*) 0x8052E000)
+#define NET_TAPE_FP2 ((u32*) 0x8052E100)
+
+/* START-STATE SNAPSHOT: the CPU-AI block (plus the camera/HUD entries the
+ * prerace clear aligns) carries residue that is NOT reproducible run-to-run —
+ * that is the entire reason the host broadcasts its block (LSBLK v2). The
+ * recorder stores the agreed state at its sBlkApplied moment; replay restores
+ * it at the same point. Without this a replay tracks the recording only until
+ * the countdown ends and the CPU karts start consulting the block (first
+ * divergence ~df 170). Layout: [u32 payloadLen][blk][camera1[1..3]][hud[1..3]]. */
+#define NET_TAPE_SNAP ((u8*) 0x80530000)
+
+/* REPLAY (task follow-on to #35): when tapeload.py arms a tape (magic NTPR),
+ * the next online race is driven ENTIRELY from the tape — all np karts read
+ * their per-df inputs from it, nothing is captured, sent, or ingested. The
+ * sim is deterministic, so with the recorded start parameters (course, cc,
+ * chars, delay — forced by net_menu_start_race via the getters below) the
+ * race reproduces bit-for-bit; the hash lane proves it. Meant to run from a
+ * SOLO-hosted room (host alone -> node 0, same start semantics as the
+ * recorded host). All state seeded in net_lockstep_reset (netbss is NOLOAD). */
+static bool sLsEngaged; /* lockstep reset ran for the CURRENT racing episode —
+    consulted by the stall gate so sim frame 0 can never run before the tick
+    engages, regardless of thread5 ordering or aborted launch episodes */
+static u32  sReplayRaceTicks; /* ticks since lockstep reset (forensics) */
+static bool sReplayActive;
+static bool sReplayDone;    /* end-of-tape report fired */
+static u32  sReplayChecked; /* hash-lane entries compared */
+static u32  sReplayBad;     /* mismatches (0 = bit-exact reproduction) */
+
+/* Save/restore the agreed start state at the sBlkApplied moment (see the
+ * NET_TAPE_SNAP note). Both run with the sim gate still closed, so the block
+ * is static under them. */
+static void np_tape_snap_save(void) {
+    u8* p = NET_TAPE_SNAP;
+    u32 blk = (u32) (LS_CPU_STATE_END - unk_cpu_vehicles_camera_path_pad);
+    u32 total = blk + (u32) sizeof(Camera) * 3 + (u32) sizeof(hud_player) * 3;
+    memcpy(p + 4, unk_cpu_vehicles_camera_path_pad, blk);
+    memcpy(p + 4 + blk, &camera1[1], sizeof(Camera) * 3);
+    memcpy(p + 4 + blk + sizeof(Camera) * 3, &playerHUD[1], sizeof(hud_player) * 3);
+    *(u32*) p = total;
+}
+
+static bool np_tape_snap_restore(void) {
+    u8* p = NET_TAPE_SNAP;
+    u32 blk = (u32) (LS_CPU_STATE_END - unk_cpu_vehicles_camera_path_pad);
+    u32 total = blk + (u32) sizeof(Camera) * 3 + (u32) sizeof(hud_player) * 3;
+    if (*(u32*) p != total) {
+        return false; /* tape carries no (layout-compatible) snapshot */
+    }
+    memcpy(unk_cpu_vehicles_camera_path_pad, p + 4, blk);
+    memcpy(&camera1[1], p + 4 + blk, sizeof(Camera) * 3);
+    memcpy(&playerHUD[1], p + 4 + blk + sizeof(Camera) * 3, sizeof(hud_player) * 3);
+    return true;
+}
+#define NP_REPLAYING sReplayActive
+#else
+#define NP_REPLAYING false
 #endif
 static u16     sLsPrevBtn[NET_MAX_SLOTS]; /* last APPLIED buttons per player (edge derivation) */
 static s32     sLsMyPlayer = -1;
@@ -1286,15 +1393,6 @@ typedef struct {
 } LsPacket;
 
 static void net_lockstep_reset(void) {
-#if NET_DIAG
-    {
-        extern s16 gCurrentCourseId;
-        NET_TAPE_HDR->magic = NET_TAPE_MAGIC;
-        NET_TAPE_HDR->frames = 0;
-        NET_TAPE_HDR->players = 0; /* stamped when the drive loop first runs */
-        NET_TAPE_HDR->course = (u32) (u16) gCurrentCourseId;
-    }
-#endif
     bzero(sLsInput, sizeof(sLsInput));
     bzero(sLsPrevBtn, sizeof(sLsPrevBtn));
     bzero(sLsDropped, sizeof(sLsDropped));
@@ -1331,6 +1429,62 @@ static void net_lockstep_reset(void) {
     if (sLsDelay < LS_DELAY_MIN || sLsDelay > LS_DELAY_MAX) {
         sLsDelay = LS_DELAY_MIN; /* zero-init bss -> default here */
     }
+#if NET_DIAG
+    /* Tape: an ARMED tape (magic NTPR) flips this race into replay and is left
+     * untouched, so it can be replayed again; otherwise start a fresh recording.
+     * Runs after the delay clamp so the stamped delay is the validated one
+     * (start_race already forced sLsDelay = tape delay for a replay race). */
+    sLsEngaged = true;
+    sReplayRaceTicks = 0;
+#if NET_DIAG
+    *(volatile u32*) 0x8052E210 += 1;                  /* reset count */
+    *(volatile u32*) 0x8052E218 = sLsStall ? 1u : 0u;  /* stall state at reset */
+#endif
+    sReplayActive = (NET_TAPE_HDR->magic == NET_TAPE_ARMED);
+    {
+        /* reset-time kart fingerprint (recording -> 0x8052E300, travels in the
+         * tape; replay -> 0x8052E400): distinguishes 'karts differed before
+         * lockstep engaged' from 'diverged under lockstep'. */
+        u32* fp = sReplayActive ? (u32*) 0x8052E400 : (u32*) 0x8052E300;
+        s32 pi;
+        for (pi = 0; pi < NUM_PLAYERS; pi++) {
+            Player* pl = &gPlayers[pi];
+            memcpy(&fp[pi * 8 + 0], &pl->pos[0], 12);
+            fp[pi * 8 + 3] = ((u32) (u16) pl->rotation[0] << 16) | (u16) pl->rotation[1];
+            fp[pi * 8 + 4] = ((u32) (u16) pl->rotation[2] << 16) | (u16) pl->lapCount;
+            memcpy(&fp[pi * 8 + 5], &pl->speed, 4);
+            fp[pi * 8 + 6] = pl->effects;
+            fp[pi * 8 + 7] = ((u32) pl->type << 16) | (u16) pl->characterId;
+        }
+    }
+    sReplayDone = false;
+    sReplayChecked = 0;
+    sReplayBad = 0;
+    if (sReplayActive) {
+        u32 d = NET_TAPE_HDR->delay;
+        if (d >= LS_DELAY_MIN && d <= LS_DELAY_MAX) {
+            sLsDelay = d; /* belt & braces: the ramp shape must match the recording */
+        }
+        NET_TAPE_HDR->rsvd[0] = NET_TAPE_VERDICT_RUN;
+        NET_TAPE_HDR->rsvd[1] = 0;
+        NET_TAPE_HDR->rsvd[2] = 0;
+    } else {
+        extern s16 gCurrentCourseId;
+        extern s32 gCCSelection;
+        s32 ci;
+        NET_TAPE_HDR->magic = NET_TAPE_MAGIC;
+        NET_TAPE_HDR->frames = 0;
+        NET_TAPE_HDR->players = 0; /* stamped when the drive loop first runs */
+        NET_TAPE_HDR->course = (u32) (u16) gCurrentCourseId;
+        NET_TAPE_HDR->delay = sLsDelay;
+        NET_TAPE_HDR->cc = (u32) gCCSelection;
+        NET_TAPE_HDR->hashes = 0;
+        for (ci = 0; ci < 8; ci++) {
+            NET_TAPE_HDR->chars[ci] = 0xFF; /* stamped with players below */
+        }
+        NET_TAPE_HDR->rsvd[0] = NET_TAPE_HDR->rsvd[1] = NET_TAPE_HDR->rsvd[2] = 0;
+    }
+#endif
     {
         /* seed the ring with an impossible frame, NOT zero: a zeroed slot
          * claims "frame 0, hash 0", so a peer's real frame-0 hash arriving
@@ -1398,14 +1552,33 @@ void net_lockstep_tick(void) {
     s32 racing = (gGamestate == RACING);
 
     if (!netpak_present() || !net_menu_online_active() || !racing) {
+#if NET_DIAG
+        /* forensics: racing frames that ran UNGATED (sim advances while
+         * lockstep sits out) + which gate failed. Cleared by tapeload.py. */
+        if (racing) {
+            *(volatile u32*) 0x8052E208 += 1;
+            *(volatile u32*) 0x8052E20C = (netpak_present() ? 0u : 1u) |
+                                          (net_menu_online_active() ? 0u : 2u);
+        }
+#endif
         prevRacing = racing;
         sLsRngActive = false;
+        sLsEngaged = false; /* current episode (if any) is not lockstep-engaged */
         return;
     }
-    if (!prevRacing) {
+    if (!prevRacing && !sLsEngaged) {
+        /* Engage once per racing episode. prevRacing alone double-fired: it
+         * lives where a (still unidentified) writer can flip it between the
+         * first two frames, and a second reset re-arms the df0 store-once,
+         * corrupting the replay comparison (and the recorded lane). sLsEngaged
+         * is authoritative: set here, cleared only by the early-return when
+         * the episode truly ends. */
         net_lockstep_reset(); /* fresh input timeline at race start */
     }
     prevRacing = racing;
+#if NET_DIAG
+    sReplayRaceTicks++;
+#endif
 
     me = sLsMyPlayer;
     if (me < 0) {
@@ -1499,7 +1672,12 @@ void net_lockstep_tick(void) {
      * logical frame. While paused, each console pulses START on its local pad
      * so the real pause-menu resume path runs — like both users unpausing.
      * Pokes: 0xA5 = injection, 0xA6 = paused (|df), 0xA7 = unpaused. Detector
-     * (0x7D) must stay green throughout. */
+     * (0x7D) must stay green throughout.
+     * OFF by default since the tape-replay work: pause DURATION is wall-clock
+     * (pause-menu render frames accumulate state), so an injected pause makes
+     * every test recording irreproducible. Flip on to re-test pause sync. */
+#define NET_PAUSE_INJECT_TEST 0
+#if NET_PAUSE_INJECT_TEST
     {
         static u32 sPjTick, sPjPaused;
         sPjTick++;
@@ -1521,9 +1699,16 @@ void net_lockstep_tick(void) {
             sPjPaused = 0;
         }
     }
+#endif /* NET_PAUSE_INJECT_TEST */
 #endif
 
     np = net_menu_player_count();
+#if NET_DIAG
+    if (sReplayActive) {
+        np = (s32) NET_TAPE_HDR->players; /* the RECORDED roster size, not the
+                                           * solo replay room's (typically 1) */
+    }
+#endif
     if (np > NET_MAX_SLOTS) {
         np = NET_MAX_SLOTS;
     }
@@ -1588,7 +1773,25 @@ void net_lockstep_tick(void) {
      * peer per tick); joiners hold the gate until fully applied. */
     if (!sBlkApplied) {
         u32 blkTotal = (u32) (LS_CPU_STATE_END - unk_cpu_vehicles_camera_path_pad);
-        if (me == 0) {
+        if (NP_REPLAYING) {
+#if NET_DIAG
+            /* Replay: hold the gate for the first ticks of the episode. The
+             * launch flow drops out of RACING for one iteration right after
+             * frame 0 and the lockstep re-engages (double reset, observed);
+             * the RECORDING's gate spans that flicker naturally (block send
+             * takes ~7 ticks), so the tape's df0 is the pristine pre-sim
+             * state. An instantly-open replay gate would sim frame 0 before
+             * the re-engagement and compare df0 one frame late. Then adopt
+             * the RECORDED start state — the CPU-AI block carries run-to-run
+             * residue, so "same clear + same course init" is NOT enough. */
+            if (sReplayRaceTicks >= 8) {
+                if (!np_tape_snap_restore()) {
+                    netpak_debug_poke(0x7E0FFFFEu); /* tape has no usable snapshot */
+                }
+                sBlkApplied = true;
+            }
+#endif
+        } else if (me == 0) {
             if (sBlkSendPos < blkTotal) {
                 LsBlkMsg bm;
                 u32 len = blkTotal - sBlkSendPos;
@@ -1608,6 +1811,9 @@ void net_lockstep_tick(void) {
             }
             if (sBlkSendPos >= blkTotal) {
                 sBlkApplied = true; /* the host's own block IS the reference */
+#if NET_DIAG
+                np_tape_snap_save(); /* tape: the agreed start state, for replay */
+#endif
             }
         }
     }
@@ -1627,6 +1833,36 @@ void net_lockstep_tick(void) {
      * hasn't advanced) the input for frame f is already committed + broadcast to the
      * peer, so re-reading the controller here would rewrite an input the peer may be
      * about to consume. Only capture on a fresh frame. */
+#if NET_DIAG
+    if (sReplayActive) {
+        /* REPLAY input source: seed every kart's ring slot for frame f from the
+         * tape (idempotent across stall/pause re-entries at the same f). The
+         * normal machinery below — stall gate, delayed apply at df, edges,
+         * hashes — then runs unchanged on tape data. Past the tape's end the
+         * last frame is held (karts coast; the race ended by then anyway). */
+        u32 src = f;
+        if (NET_TAPE_HDR->frames == 0) {
+            src = 0; /* empty tape: slot stays neutral via the bzero'd ring */
+        } else if (src >= NET_TAPE_HDR->frames) {
+            src = NET_TAPE_HDR->frames - 1;
+        }
+        for (i = 0; i < np; i++) {
+            LsInput* s = &sLsInput[i][f % LS_RING];
+            if (NET_TAPE_HDR->frames != 0) {
+                const u8* t = NET_TAPE_DATA + (src * 8u + (u32) i) * 4u;
+                s->button = (u16) (((u16) t[0] << 8) | t[1]);
+                s->stickX = (s8) t[2];
+                s->stickY = (s8) t[3];
+            } else {
+                s->button = 0; /* empty tape: neutral, don't reuse wrapped slots */
+                s->stickX = 0;
+                s->stickY = 0;
+            }
+            s->have = true;
+            s->frame = f;
+        }
+    } else
+#endif
     if (!sLsStall && gIsGamePaused == 0) {
         LsInput* s = &sLsInput[me][f % LS_RING];
         s->button = gControllers[0].button;
@@ -1636,24 +1872,26 @@ void net_lockstep_tick(void) {
         s->frame = f;
     }
 
-    /* broadcast my last LS_REDUN frames (redundancy covers a dropped datagram) */
-    base = (s32) f - (LS_REDUN - 1);
-    if (base < 0) {
-        base = 0;
+    if (!NP_REPLAYING) {
+        /* broadcast my last LS_REDUN frames (redundancy covers a dropped datagram) */
+        base = (s32) f - (LS_REDUN - 1);
+        if (base < 0) {
+            base = 0;
+        }
+        p.tag = LS_TAG;
+        p.player = (u8) me;
+        p.count = (u8) (f - (u32) base + 1);
+        p.pad = 0;
+        p.baseFrame = (u16) base;
+        p.pad2 = 0;
+        for (i = 0; i < (s32) p.count; i++) {
+            LsInput* s = &sLsInput[me][(base + i) % LS_RING];
+            p.in[i].button = s->button;
+            p.in[i].stickX = s->stickX;
+            p.in[i].stickY = s->stickY;
+        }
+        netpak_send(NETPAK_BROADCAST, 0, &p, sizeof(p));
     }
-    p.tag = LS_TAG;
-    p.player = (u8) me;
-    p.count = (u8) (f - (u32) base + 1);
-    p.pad = 0;
-    p.baseFrame = (u16) base;
-    p.pad2 = 0;
-    for (i = 0; i < (s32) p.count; i++) {
-        LsInput* s = &sLsInput[me][(base + i) % LS_RING];
-        p.in[i].button = s->button;
-        p.in[i].stickX = s->stickX;
-        p.in[i].stickY = s->stickY;
-    }
-    netpak_send(NETPAK_BROADCAST, 0, &p, sizeof(p));
 
     /* ingest remote inputs (stored at the SENDER's frame index) */
 #if NET_LOCKSTEP_LOSS
@@ -1670,6 +1908,10 @@ void net_lockstep_tick(void) {
     }
 #endif
     while (netpak_recv(&pkt) == 0) {
+        if (NP_REPLAYING) {
+            continue; /* replay is self-contained: drain the ring, apply nothing —
+                       * a stray joiner must not be able to perturb the timeline */
+        }
         if (pkt.ch == 0 && pkt.len >= (u16) sizeof(LsHashMsg) && pkt.data[0] == LSHASH_TAG) {
             /* live desync check: compare the peer's (frame, hash) to ours */
             const LsHashMsg* hm = (const LsHashMsg*) pkt.data;
@@ -1737,6 +1979,9 @@ void net_lockstep_tick(void) {
                 sBlkGot += bm->len;
                 if (sBlkGot >= blkTotal) {
                     sBlkApplied = true;
+#if NET_DIAG
+                    np_tape_snap_save(); /* joiner holds the same agreed state */
+#endif
                 }
             }
         } else if (pkt.ch == 0 && pkt.len >= 8 && pkt.data[0] == LSDROP_TAG) {
@@ -1754,7 +1999,7 @@ void net_lockstep_tick(void) {
     {
         static u32 echoTick;
         echoTick++;
-        if ((echoTick % 32) == 0) {
+        if ((echoTick % 32) == 0 && !NP_REPLAYING) {
             for (i = 0; i < np; i++) {
                 u32 L2 = sLsDropLast[i];
                 if (sLsDropped[i] && f >= LS_DELAY && (f - LS_DELAY) - L2 < 48u) {
@@ -1806,6 +2051,13 @@ void net_lockstep_tick(void) {
         if (gIsGamePaused != 1) {
             gIsGamePaused = 1;
         }
+        if (NP_REPLAYING && sLsPauseTicks >= 15) {
+            /* Replay auto-resume: a recorded pause halts df on both sides, and
+             * resume timing is wall-clock (sim-neutral, v13/v21) — but the
+             * resume ACTION was a local button or LSRESUME, which a solo
+             * replay has neither of. Resume the same way LSRESUME does. */
+            gIsGamePaused = 0;
+        }
         /* debounce: the press that opened the pause can leak a stale edge
          * into the menu on the very next frames ("pauses then instantly
          * unpauses"). Swallow local menu input for the first quarter second. */
@@ -1814,7 +2066,7 @@ void net_lockstep_tick(void) {
             gControllers[0].buttonPressed = 0;
         }
         sLsWasPaused = true;
-        if ((holdTick++ & 31) == 0) {
+        if ((holdTick++ & 31) == 0 && !NP_REPLAYING) {
             u32 hold = ((u32) LSHOLD_TAG << 24) | (u32) me;
             netpak_send(NETPAK_BROADCAST, 0, &hold, sizeof(hold));
         }
@@ -1833,7 +2085,9 @@ void net_lockstep_tick(void) {
     if (sLsResumeTx != 0) {
         u32 rm = ((u32) LSRESUME_TAG << 24) | (u32) me;
         sLsResumeTx--;
-        netpak_send(NETPAK_BROADCAST, 0, &rm, sizeof(rm));
+        if (!NP_REPLAYING) {
+            netpak_send(NETPAK_BROADCAST, 0, &rm, sizeof(rm));
+        }
     }
 #endif
 
@@ -2055,8 +2309,10 @@ void net_lockstep_tick(void) {
                 gControllers[i].rawStickY = s->stickY;
                 sLsPrevBtn[i] = cur;
 #if NET_DIAG
-                /* input tape: record the APPLIED input (post drop-neutral) */
-                if (df < NET_TAPE_MAX_FRAMES) {
+                /* input tape: record the APPLIED input (post drop-neutral).
+                 * Never while replaying — that would overwrite the tape being
+                 * read (and it already holds exactly these values). */
+                if (!sReplayActive && df < NET_TAPE_MAX_FRAMES) {
                     u8* t = NET_TAPE_DATA + ((u32) df * 8u + (u32) i) * 4u;
                     t[0] = (u8) (cur >> 8);
                     t[1] = (u8) cur;
@@ -2066,7 +2322,13 @@ void net_lockstep_tick(void) {
                         NET_TAPE_HDR->frames = (u32) df + 1u;
                     }
                     if (NET_TAPE_HDR->players == 0) {
+                        s32 ck;
                         NET_TAPE_HDR->players = (u32) np;
+                        /* start-state chars: by the first applied frame the
+                         * synced roster is live in the karts (spawn ran) */
+                        for (ck = 0; ck < 8; ck++) {
+                            NET_TAPE_HDR->chars[ck] = (u8) gPlayers[ck].characterId;
+                        }
                     }
                 }
 #endif
@@ -2092,10 +2354,13 @@ void net_lockstep_tick(void) {
              * hash. Keyed by df (the logical frame), so stalls don't misalign it. */
             {
                 u32 h = 2166136261u;
+                u32 khRow[NUM_PLAYERS]; /* per-kart sub-hashes: the replay tape
+                    stores them per check so a divergence NAMES its kart */
                 s32 pi, fi;
                 for (pi = 0; pi < NUM_PLAYERS; pi++) {
                     Player* pl = &gPlayers[pi];
                     u32 fld[8];
+                    u32 kh = 2166136261u;
                     memcpy(&fld[0], &pl->pos[0], 4);
                     memcpy(&fld[1], &pl->pos[1], 4);
                     memcpy(&fld[2], &pl->pos[2], 4);
@@ -2107,9 +2372,25 @@ void net_lockstep_tick(void) {
                         sync in the hash: unsynced characters = different physics
                         = silent divergence; now it fails the campaign instead */
                     for (fi = 0; fi < 8; fi++) {
-                        h ^= fld[fi];
-                        h *= 16777619u;
+                        kh ^= fld[fi];
+                        kh *= 16777619u;
                     }
+                    khRow[pi] = kh;
+                    h ^= kh;
+                    h *= 16777619u;
+#if NET_DIAG
+                    /* df=0 spawn fingerprint (see NET_TAPE_FP) — first eval
+                     * only (the ramp re-evaluates df=0; the lane stores the
+                     * first, so the fingerprint must match that snapshot) */
+                    if (df == 0 && sLsHashLastDf == 0xFFFFFFFFu) {
+                        u32* fp = NP_REPLAYING ? NET_TAPE_FP2 : NET_TAPE_FP;
+                        for (fi = 0; fi < 8; fi++) {
+                            fp[pi * 8 + fi] = fld[fi];
+                        }
+                        /* wall-ticks from reset to this first eval */
+                        *((u32*) 0x8052E200 + (NP_REPLAYING ? 1 : 0)) = sReplayRaceTicks;
+                    }
+#endif
                 }
                 netpak_debug_poke(0x76000000u | (df & 0xFFFFFFu));
                 netpak_debug_poke(0x77000000u | (h & 0xFFFFFFu));
@@ -2169,20 +2450,80 @@ void net_lockstep_tick(void) {
                 sLsHashFrame[df % LS_HASHRING] = df;
                 sLsHashVal[df % LS_HASHRING] = h;
                 if ((df & 15) == 0) {
-                    LsHashMsg hm;
-                    hm.tag = LSHASH_TAG;
-                    hm.pad = 0;
-                    hm.pad2 = 0;
-                    hm.frame = df;
-                    hm.hash = h;
-                    netpak_send(NETPAK_BROADCAST, 0, &hm, sizeof(hm));
-#if NET_MENU_TEST
-                    netpak_debug_poke(0xE8000000u | (df & 0xFFFFFFu)); /* hash SENT */
+#if NET_DIAG
+                    u32 hk = df >> 4;
+                    if (sReplayActive) {
+                        /* REPLAY VERIFICATION: the recorded run's hash for this
+                         * df must match ours bit-for-bit. First-eval semantics
+                         * are identical on both sides (same store-once gate). */
+                        if (hk < NET_TAPE_HDR->hashes && hk < NET_TAPE_HASH_MAX) {
+                            sReplayChecked++;
+                            if (NET_TAPE_HASH[hk] != h) {
+                                sReplayBad++;
+                                if (!sLsDesync) {
+                                    u32 mask = 0;
+                                    for (pi = 0; pi < NUM_PLAYERS; pi++) {
+                                        if (NET_TAPE_KHASH[hk * 8 + (u32) pi] != khRow[pi]) {
+                                            mask |= 1u << pi;
+                                        }
+                                    }
+                                    sLsDesync = true; /* red square = replay split */
+                                    sLsDesyncFrame = df;
+                                    /* first-divergence forensics, packed for the
+                                     * GDB harness: which check + which karts */
+                                    NET_TAPE_HDR->rsvd[1] |= hk << 16;
+                                    NET_TAPE_HDR->rsvd[2] |= mask << 16;
+                                }
+                                netpak_debug_poke(0x7E000000u | (df & 0xFFFFFFu));
+                            }
+                            /* live verdict for the GDB-stub harness */
+                            NET_TAPE_HDR->rsvd[1] =
+                                (NET_TAPE_HDR->rsvd[1] & 0xFFFF0000u) | (sReplayChecked & 0xFFFFu);
+                            NET_TAPE_HDR->rsvd[2] =
+                                (NET_TAPE_HDR->rsvd[2] & 0xFFFF0000u) | (sReplayBad & 0xFFFFu);
+                        }
+                    } else if (hk < NET_TAPE_HASH_MAX) {
+                        NET_TAPE_HASH[hk] = h;
+                        for (pi = 0; pi < NUM_PLAYERS; pi++) {
+                            NET_TAPE_KHASH[hk * 8 + (u32) pi] = khRow[pi];
+                        }
+                        if (hk + 1u > NET_TAPE_HDR->hashes) {
+                            NET_TAPE_HDR->hashes = hk + 1u;
+                        }
+                    }
 #endif
+                    if (!NP_REPLAYING) {
+                        LsHashMsg hm;
+                        hm.tag = LSHASH_TAG;
+                        hm.pad = 0;
+                        hm.pad2 = 0;
+                        hm.frame = df;
+                        hm.hash = h;
+                        netpak_send(NETPAK_BROADCAST, 0, &hm, sizeof(hm));
+#if NET_MENU_TEST
+                        netpak_debug_poke(0xE8000000u | (df & 0xFFFFFFu)); /* hash SENT */
+#endif
+                    }
                 }
                 }
             }
 
+#if NET_DIAG
+            /* REPLAY end-of-tape verdict: one line the harness (and a human
+             * with the ares log) can grep. Checked == 0 would mean the hash
+             * lane never engaged — treat as failure, not silence. */
+            if (sReplayActive && !sReplayDone && NET_TAPE_HDR->frames != 0 &&
+                df + 1u >= NET_TAPE_HDR->frames) {
+                sReplayDone = true;
+                NET_TAPE_HDR->rsvd[0] = NET_TAPE_VERDICT_DONE;
+                NET_TAPE_HDR->rsvd[1] =
+                    (NET_TAPE_HDR->rsvd[1] & 0xFFFF0000u) | (sReplayChecked & 0xFFFFu);
+                NET_TAPE_HDR->rsvd[2] =
+                    (NET_TAPE_HDR->rsvd[2] & 0xFFFF0000u) | (sReplayBad & 0xFFFFu);
+                netpak_debug_poke(0x7F000000u | ((sReplayBad != 0) ? 0x800000u : 0u) |
+                                  (sReplayChecked & 0xFFFFu));
+            }
+#endif
             sLsFrame++;
         }
     }
@@ -2220,8 +2561,67 @@ void net_lockstep_prerace_clear(void) {
 /* Stall-gate query for race_logic_loop: true when net_lockstep_tick could not
  * assemble the full input set for the frame to simulate, so the sim must be held
  * this render-frame (both consoles freeze in sync). Always false outside lockstep. */
+/* --- Tape replay accessors (consumed by net_menu at race setup) ------------
+ * armed() is true from tapeload.py's poke until the tape is overwritten by the
+ * next recorded race; while armed, net_menu_start_race forces the recorded
+ * course/cc/delay and net_menu_take_synced_chars serves the recorded roster,
+ * so the replay race spawns with the exact recorded start state. */
+bool net_replay_armed(void) {
+#if NET_LOCKSTEP && NET_DIAG
+    return NET_TAPE_HDR->magic == NET_TAPE_ARMED;
+#else
+    return false;
+#endif
+}
+
+s32 net_replay_course(void) {
+#if NET_LOCKSTEP && NET_DIAG
+    return (s32) NET_TAPE_HDR->course;
+#else
+    return -1;
+#endif
+}
+
+s32 net_replay_cc(void) {
+#if NET_LOCKSTEP && NET_DIAG
+    return (s32) NET_TAPE_HDR->cc;
+#else
+    return -1;
+#endif
+}
+
+s32 net_replay_delay(void) {
+#if NET_LOCKSTEP && NET_DIAG
+    return (s32) NET_TAPE_HDR->delay;
+#else
+    return 0;
+#endif
+}
+
+void net_replay_get_chars(u8* out8) {
+    s32 i;
+    for (i = 0; i < 8; i++) {
+#if NET_LOCKSTEP && NET_DIAG
+        out8[i] = NET_TAPE_HDR->chars[i];
+#else
+        out8[i] = (u8) i;
+#endif
+    }
+}
+
+u32 net_lockstep_frame(void) {
+#if NET_LOCKSTEP
+    return sLsFrame;
+#else
+    return 0;
+#endif
+}
+
 bool net_lockstep_stalled(void) {
 #if NET_LOCKSTEP
+    if (!sLsEngaged && net_menu_online_active() && gGamestate == RACING && netpak_present()) {
+        return true; /* online race frame before the tick engaged: hold it */
+    }
     return sLsStall;
 #else
     return false;
@@ -2306,6 +2706,11 @@ void net_lockstep_drive_humans(void) {
         return;
     }
     np = net_menu_player_count();
+#if NET_DIAG
+    if (sReplayActive) {
+        np = (s32) NET_TAPE_HDR->players; /* replay: recorded roster, as above */
+    }
+#endif
     if (np > NET_MAX_SLOTS) {
         np = NET_MAX_SLOTS;
     }

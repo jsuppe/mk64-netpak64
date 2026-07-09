@@ -1729,25 +1729,32 @@ void course_select_menu_act(struct Controller* arg0, u16 controllerIdx) {
         s32 hostCourse = net_menu_online_course();
 
         if (net_menu_is_host()) {
-            /* v32: the HOST picks on the REAL course-select screen. Vanilla
-             * navigation stays live (B swallowed: no backing out of an online
-             * start). On reaching the map/OK sub-state the pick is final:
-             * broadcast it, then hold at the barrier as before. */
-            btnAndStick &= ~B_BUTTON;
-            if (gSubMenuSelection == SUB_MENU_MAP_SELECT_OK) {
-                static s32 sCourseTx;
-                if ((sCourseTx++ & 31) == 0) {
-                    net_menu_send_course(gCurrentCourseId); /* repeat-safe */
+            extern bool net_replay_armed(void);
+            if (!net_replay_armed()) {
+                /* v32: the HOST picks on the REAL course-select screen. Vanilla
+                 * navigation stays live (B swallowed: no backing out of an online
+                 * start). On reaching the map/OK sub-state the pick is final:
+                 * broadcast it, then hold at the barrier as before. */
+                btnAndStick &= ~B_BUTTON;
+                if (gSubMenuSelection == SUB_MENU_MAP_SELECT_OK) {
+                    static s32 sCourseTx;
+                    if ((sCourseTx++ & 31) == 0) {
+                        net_menu_send_course(gCurrentCourseId); /* repeat-safe */
+                    }
+                    if (net_online_barrier_ready()) {
+                        btnAndStick |= A_BUTTON;
+                        net_menu_online_clear();
+                        sOnlineLocked = 0;
+                    }
+                    /* GP cup bookkeeping: race as cup slot 0 for grid/CPU init */
+                    gCourseIndexInCup = 0;
                 }
-                if (net_online_barrier_ready()) {
-                    btnAndStick |= A_BUTTON;
-                    net_menu_online_clear();
-                    sOnlineLocked = 0;
-                }
-                /* GP cup bookkeeping: race as cup slot 0 for grid/CPU init */
-                gCourseIndexInCup = 0;
+                goto online_host_interactive;
             }
-            goto online_host_interactive;
+            /* TAPE REPLAY: the tape dictates the track. The host takes the
+             * joiner's auto-locked path below — net_menu_start_race pre-set
+             * sOnlineCourse from the tape header, so poll_course is already
+             * satisfied and the human's course navigation is swallowed. */
         }
 
         /* JOINER: fully spectating this screen. Swallow every input; wait for
