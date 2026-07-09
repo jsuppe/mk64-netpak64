@@ -1206,6 +1206,7 @@ typedef struct {
  * race reproduces bit-for-bit; the hash lane proves it. Meant to run from a
  * SOLO-hosted room (host alone -> node 0, same start semantics as the
  * recorded host). All state seeded in net_lockstep_reset (netbss is NOLOAD). */
+static u32  sLsNotRacing; /* consecutive non-RACING ticks (episode-end debounce) */
 static bool sLsEngaged; /* lockstep reset ran for the CURRENT racing episode —
     consulted by the stall gate so sim frame 0 can never run before the tick
     engages, regardless of thread5 ordering or aborted launch episodes */
@@ -1563,9 +1564,21 @@ void net_lockstep_tick(void) {
 #endif
         prevRacing = racing;
         sLsRngActive = false;
-        sLsEngaged = false; /* current episode (if any) is not lockstep-engaged */
+        /* Episode-end DEBOUNCE: the launch flow drops out of RACING for a
+         * single iteration right after frame 0. Ending the episode there
+         * causes a second full reset — and if that lands on a JOINER after
+         * the host already finished its one-shot block stream, the joiner
+         * waits forever on the block gate: the on-device "first frame
+         * frozen" race entry. Only a sustained exit ends the episode. */
+        if (!racing) {
+            sLsNotRacing++;
+            if (sLsNotRacing >= 30) {
+                sLsEngaged = false;
+            }
+        }
         return;
     }
+    sLsNotRacing = 0;
     if (!prevRacing && !sLsEngaged) {
         /* Engage once per racing episode. prevRacing alone double-fired: it
          * lives where a (still unidentified) writer can flip it between the
