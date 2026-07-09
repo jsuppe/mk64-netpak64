@@ -430,7 +430,15 @@ ifeq ($(GCC),1)
   # Debug-mode note (2026-07-09): GCC=1 used to imply ENABLE_DEBUG_MODE via
   # defines.h, whose title-screen quick-start hijacked START and looked like
   # a string of GCC miscompiles. Fixed in defines.h; the full safe set works.
-  GCC_GAME_FILES := $(SAFE_C_FILES)
+  # Netcode stays on IDO: netpak_mk64 does raw PI-register access, net_race
+  # carries an optimizer-sensitivity workaround (see net_race.c detector gate
+  # history), and the whole lockstep stack is determinism-audited against IDO
+  # codegen. GCC'ing them broke 2P races in-flight (2026-07-09) while solo
+  # replay stayed green — worst kind of breakage. Do not re-add.
+  GCC_GAME_FILES := $(filter-out \
+    $(BUILD_DIR)/src/netpak_mk64.o $(BUILD_DIR)/src/netpak_sc64.o \
+    $(BUILD_DIR)/src/net_race.o $(BUILD_DIR)/src/net_menu.o \
+    $(BUILD_DIR)/src/usb.o,$(SAFE_C_FILES))
   $(BUILD_DIR)/src/main.o:                          OPT_FLAGS := -g
   $(BUILD_DIR)/src/racing/skybox_and_splitscreen.o: OPT_FLAGS := -g
   $(BUILD_DIR)/src/racing/render_courses.o:         OPT_FLAGS := -g

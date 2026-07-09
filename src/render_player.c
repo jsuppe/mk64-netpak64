@@ -876,8 +876,14 @@ void move_u16_towards(u16* startingValue, s16 targetValue, f32 somePercent) {
 }
 
 void func_80022744(void) {
+    extern void np_perf_enter(s32 k); /* perf brackets (netpak_sc64.c) */
+    extern void np_perf_leave(s32 k);
+    np_perf_enter(8);
     func_8006E058();
+    np_perf_leave(8);
+    np_perf_enter(9);
     func_8002276C();
+    np_perf_leave(9);
 }
 
 void func_8002276C(void) {

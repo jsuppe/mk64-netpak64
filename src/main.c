@@ -621,16 +621,12 @@ void race_logic_loop(void) {
     if (sNumVBlanks < 0) {
         sNumVBlanks = 1;
     }
-    np_perf_enter(9);
     func_802A4EF4();
-    np_perf_leave(9);
 
     switch (gActiveScreenMode) {
         case SCREEN_MODE_1P:
             gTickSpeed = 2;
-            np_perf_enter(8);
             replays_loop();
-            np_perf_leave(8);
             /* Lockstep stall gate: hold the sim this render-frame when a peer input
              * for the frame to simulate hasn't arrived (both consoles freeze in
              * sync). Render still runs below, so the frozen scene keeps drawing.
