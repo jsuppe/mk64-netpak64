@@ -1030,8 +1030,11 @@ static void net_race_debug_state(void) {
  * Its own counter, so it doesn't depend on net_race's sRaceFrames. */
 u32 net_lockstep_frame(void); /* forward: defined with the lockstep module */
 
+void np_perf_sample(void); /* netpak_sc64.c (nettext overlay — .main is full) */
+
 void net_race_debug_tick(void) {
 #if NET_DIAG
+    np_perf_sample();
     /* RAM ring @0x8052E800: one 16B entry per race_logic_loop entry (first 128
      * RACING frames), dumped over the GDB stub — frame-by-frame launch story.
      * [idx @0x8052E7FC] entry: {gamestate u16, raceTicks u16, kart0 posZ u32,

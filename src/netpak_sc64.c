@@ -382,3 +382,54 @@ void np_sc64_dma(s32 dir, u32 cart_off, void *dram, u32 len) {
         return;
     }
 }
+
+/* --- PERF ACCUMULATOR (perf-baseline work; lives here because .main is at
+ * the task-#33 size limit and this overlay has headroom) ---------------------
+ * Called once per race_logic_loop frame (net_race_debug_tick). Sums raw
+ * per-frame profiler deltas into RAM at 0x8052F800 for the GDB perf harness
+ * (us = cycles * 64 / 3000, converted harness-side). Layout:
+ *   u32 frames; then 6 x { u64 sumCycles; u32 maxCycles; u32 pad }
+ *   buckets: 0 sim, 1 dl-submit, 2 thread5-total, 3 audio, 4 rsp, 5 rdp */
+#include "profiler.h"
+
+void np_perf_sample(void) {
+    extern struct ProfilerFrameData gProfilerFrameData[2];
+    extern s16 D_800DC668; /* gameTimes fill index (flips at THREAD5_END) */
+    extern s16 D_800DC66C; /* gfxTimes fill index (flips at TASKS_QUEUED) */
+    volatile u32* acc = (volatile u32*) 0x8052F800;
+    static OSTime sLastT5; /* netbss: zeroed at boot */
+    /* the COMPLETED frames live in the buffers the fill indices point AWAY from */
+    struct ProfilerFrameData* pg = &gProfilerFrameData[D_800DC668 ^ 1];
+    struct ProfilerFrameData* px = &gProfilerFrameData[D_800DC66C ^ 1];
+    OSTime t5 = pg->gameTimes[THREAD5_START];
+    u64 d[6];
+    s32 i, k;
+    if (t5 == 0 || t5 == sLastT5 || pg->gameTimes[THREAD5_END] <= t5) {
+        return; /* incomplete frame or already sampled */
+    }
+    sLastT5 = t5;
+    d[0] = pg->gameTimes[LEVEL_SCRIPT_EXECUTE] - t5;
+    d[1] = pg->gameTimes[AFTER_DISPLAY_LISTS] - pg->gameTimes[BEFORE_DISPLAY_LISTS];
+    d[2] = pg->gameTimes[THREAD5_END] - t5;
+    d[3] = 0;
+    for (i = 0; i + 1 < pg->numSoundTimes; i += 2) {
+        d[3] += pg->soundTimes[i + 1] - pg->soundTimes[i];
+    }
+    d[4] = px->gfxTimes[RSP_COMPLETE] - px->gfxTimes[TASKS_QUEUED];
+    d[5] = px->gfxTimes[RDP_COMPLETE] - px->gfxTimes[TASKS_QUEUED];
+    for (k = 0; k < 6; k++) {
+        if (d[k] > 4000000u) {
+            return; /* >85ms: stale marker from a state transition — drop frame */
+        }
+    }
+    for (k = 0; k < 6; k++) {
+        volatile u64* sum = (volatile u64*) (0x8052F808 + k * 16);
+        volatile u32* mx = (volatile u32*) (0x8052F810 + k * 16);
+        u32 v = (u32) d[k];
+        *sum += v;
+        if (v > *mx) {
+            *mx = v;
+        }
+    }
+    acc[0] += 1;
+}
