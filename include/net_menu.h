@@ -14,7 +14,12 @@
 
 /** Build number shown on the title screen ("JSUPPE VERSION N") so a stale ROM
  *  is obvious at a glance. BUMP THIS every time a new ROM is handed out. */
-#define NETPAK_ROM_VERSION 52
+#define NETPAK_ROM_VERSION 53
+
+/** Spectator (phase 2): true when this console joined a room to WATCH. */
+bool net_menu_local_spectator(void);
+/** Per-slot spectator bitmask for the current race (host-authoritative, GO). */
+u32 net_menu_spec_mask(void);
 
 /** Enter the online screen fresh (called when NETWORK_VS_MENU is set up). */
 void net_menu_reset(void);

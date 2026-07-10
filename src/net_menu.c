@@ -82,16 +82,22 @@ static const OnlineCourse kCourses[] = {
 #define OLMSG_GO    3 /* host -> peers: everyone's ready, launch the race now */
 #define OLMSG_COURSE 4 /* host -> peers: course picked on the REAL course-select
                         * screen (v32: course chosen AFTER char select) */
+#define OLMSG_SPEC  5 /* spectator -> room: "I am watching" (lobby display; the
+                       * AUTHORITATIVE spectator marker is READY pick 0xFE) */
+#define SPEC_PICK 0xFE /* READY chars[0] value that marks the sender SPECTATOR */
 typedef struct {
     u8 tag;      /* OLMSG_TAG */
     u8 type;     /* OLMSG_* */
     u8 course;   /* course id to load (OLMSG_START) */
     u8 pad;
-    u8 chars[8]; /* READY: [0] = sender's character pick.
+    u8 chars[8]; /* READY: [0] = sender's character pick (SPEC_PICK = spectator).
                   * GO:    full per-slot character table (CHARACTER SYNC —
                   * characters have different physics, so unsynced picks made
                   * every console simulate a DIFFERENT race). */
-} OnlineMsg; /* 12 bytes */
+    u8 spec;     /* GO: spectator slot bitmask (v53) — every console pre-drops
+                  * these slots at race entry: the kart is a deterministic CPU
+                  * from frame 0 and nobody ever waits on their inputs. */
+} OnlineMsg; /* 13 bytes */
 
 /* ROM-version cross-check: every lobby control message carries the sender's
  * NETPAK_ROM_VERSION in OnlineMsg.pad (v12 and older always sent 0). Any
@@ -164,6 +170,28 @@ static bool sHavePreset;
  * session. The netcode (snapshot / lockstep) gates on this so it NEVER touches
  * an offline race — offline GP/VS/Time-Trials run with pure local input. */
 static bool sOnlineActive;
+
+/* --- Spectators (phase 2) --------------------------------------------------
+ * A spectator is a room member whose slot is DROPPED FROM FRAME 0 on every
+ * console: its kart is a deterministic CPU racer and no one waits on its
+ * inputs (the whole in-race behavior rides the proven drop machinery). The
+ * spectator's own console additionally never captures/sends inputs and runs
+ * the replay-viewer camera layer (net_race.c). Join as spectator: hold Z
+ * while confirming a join (code entry or FIND GAME). */
+static bool sSpectator;     /* this console joined to WATCH, not race */
+static u8   sSpecMask;      /* per-slot spectator bits for THIS race — host
+                             * builds it from READY picks (SPEC_PICK) and
+                             * broadcasts it in GO; everyone adopts the GO copy */
+static u8   sLobbySpecMask; /* cosmetic pre-race mask from OLMSG_SPEC announces
+                             * (lobby display + barrier-timeout fallback) */
+static u32  sSpecAnnounce;  /* announce pacing tick */
+
+bool net_menu_local_spectator(void) {
+    return sSpectator;
+}
+u32 net_menu_spec_mask(void) {
+    return sSpecMask;
+}
 
 /* --- Synchronized start barrier ------------------------------------------- */
 /* After the lobby START, every player picks a driver, then holds at the map
@@ -303,7 +331,10 @@ static void build_sync_chars(void) {
         used[sSyncChars[sNodeId] & 7] = true;
     }
     for (i = 0; i < sBarrierN; i++) {
-        if (sBarrierPick[i] != 0xFF && sBarrierPeer[i] < 8) {
+        /* < 8: SPEC_PICK (spectator) and 0xFF (no pick) both fall through to
+         * the filler assignment below — a spectator's slot gets a filler
+         * character like any CPU kart. */
+        if (sBarrierPick[i] < 8 && sBarrierPeer[i] < 8) {
             sSyncChars[sBarrierPeer[i]] = sBarrierPick[i];
             used[sBarrierPick[i] & 7] = true;
         }
@@ -361,6 +392,7 @@ static void net_online_barrier_arm_host(void) {
     }
     sIsHost = true;
     sSyncCharsValid = false;
+    sSpecMask = 0; /* rebuilt from this race's READY markers + lobby announces */
     for (i = 0; i < 8; i++) {
         sBarrierPick[i] = 0xFF;
     }
@@ -400,6 +432,9 @@ bool net_online_barrier_ready(void) {
                         sBarrierReady[i] = true;
                         if (pkt.len >= 12) {
                             sBarrierPick[i] = pkt.data[4]; /* chars[0] = their pick */
+                            if (pkt.data[4] == SPEC_PICK && pkt.src < 8) {
+                                sSpecMask |= (u8) (1 << pkt.src); /* spectator slot */
+                            }
                         }
                     }
                 }
@@ -410,6 +445,9 @@ bool net_online_barrier_ready(void) {
                     }
                     sSyncCharsValid = true;
                 }
+                /* adopt the host's spectator mask (v53 GO carries it; the
+                 * version cross-check keeps pre-v53 peers out of the room) */
+                sSpecMask = (pkt.len >= 13) ? pkt.data[12] : sLobbySpecMask;
                 sBarrierWaiting = false;
                 return true; /* joiner launches on the host's GO */
             }
@@ -466,6 +504,7 @@ bool net_online_barrier_ready(void) {
                     OnlineMsg m;
                     s32 ci2;
                     m.tag = OLMSG_TAG;
+                    m.spec = 0;
                     m.type = OLMSG_START;
                     m.course = sOnlineCourse;
                     m.pad = (u8) NETPAK_ROM_VERSION; /* version cross-check */
@@ -498,6 +537,10 @@ bool net_online_barrier_ready(void) {
     if (sBarrierWaitTicks > BARRIER_TIMEOUT_TICKS) {
         netpak_debug_poke(0xF2000000u | 0xFFu); /* barrier timeout */
         build_sync_chars(); /* best-effort table from the picks we know */
+        if (!sIsHost) {
+            sSpecMask = sLobbySpecMask; /* no GO seen: best-effort mask (same
+                                         * degraded class as the char table) */
+        }
         sBarrierWaiting = false;
         return true; /* launch with whoever is coming; drops handle the rest */
     }
@@ -513,6 +556,8 @@ bool net_online_barrier_ready(void) {
             OnlineMsg m;
             s32 k;
             build_sync_chars(); /* freeze the character table for this race */
+            sSpecMask |= sLobbySpecMask; /* READY markers are authoritative;
+                                          * lobby announces are the backup */
             m.tag = OLMSG_TAG;
             m.type = OLMSG_GO;
             m.course = 0;
@@ -520,6 +565,7 @@ bool net_online_barrier_ready(void) {
             for (k = 0; k < 8; k++) {
                 m.chars[k] = sSyncChars[k];
             }
+            m.spec = sSpecMask; /* every console pre-drops these slots */
             online_msg_send_all(&m);
             sBarrierWaiting = false;
             return true;
@@ -534,7 +580,12 @@ bool net_online_barrier_ready(void) {
         for (k = 0; k < 8; k++) {
             m.chars[k] = 0xFF;
         }
-        m.chars[0] = (u8) gCharacterSelections[0]; /* my pick, for the host's table */
+        /* my pick for the host's table — SPEC_PICK marks me a spectator (my
+         * driver pick is ignored; my slot gets a filler CPU character) */
+        m.chars[0] = sSpectator ? (u8) SPEC_PICK : (u8) gCharacterSelections[0];
+        m.spec = 0;
+        netpak_debug_poke(0x5C000000u | (sSpectator ? 0x100u : 0u) |
+                          (u32) (sNodeId & 0xFF)); /* READY dbg */
         netpak_send(sHostNode, 1, &m, sizeof(m));
     }
     return false;
@@ -626,6 +677,7 @@ void net_menu_send_course(s32 courseId) {
     s32 ci;
     sOnlineCourse = (u8) courseId;
     m.tag = OLMSG_TAG;
+    m.spec = 0;
     m.type = OLMSG_COURSE;
     m.course = (u8) courseId;
     m.pad = (u8) NETPAK_ROM_VERSION;
@@ -732,13 +784,46 @@ static bool net_menu_lobby_drain(OnlineMsg* startOut, u8* startSrc) {
             memcpy(startOut, pkt.data, sizeof(OnlineMsg));
             *startSrc = pkt.src;
             gotStart = true;
+        } else if (pkt.ch == 1 && pkt.len >= (u16) sizeof(OnlineMsg) &&
+                   pkt.data[0] == OLMSG_TAG && pkt.data[1] == OLMSG_SPEC) {
+            if (pkt.src < 8) { /* lobby display + barrier-timeout fallback */
+                sLobbySpecMask |= (u8) (1 << pkt.src);
+            }
         }
+    }
+
+    /* Spectator: announce ourselves to the room ~every 2s (cosmetic — the
+     * lobby lists us as WATCHING; the authoritative marker rides READY). */
+    if (sSpectator && (sSpecAnnounce++ % 60) == 0) {
+        OnlineMsg m;
+        s32 k;
+        m.tag = OLMSG_TAG;
+        m.type = OLMSG_SPEC;
+        m.course = 0;
+        m.pad = (u8) NETPAK_ROM_VERSION;
+        for (k = 0; k < 8; k++) {
+            m.chars[k] = 0;
+        }
+        m.spec = 0;
+        online_msg_send_all(&m);
+    }
+
+    /* Drop stale lobby-spec bits when their node leaves (ids can be reused). */
+    {
+        u8 present = (u8) (1 << (sNodeId & 7));
+        for (i = 0; i < sPeerCount; i++) {
+            present |= (u8) (1 << (sPeers[i].node_id & 7));
+        }
+        sLobbySpecMask &= present;
     }
     return gotStart;
 }
 
 void net_menu_reset(void) {
     s32 i;
+    sSpectator = false;
+    sSpecMask = 0;
+    sLobbySpecMask = 0;
     sState = OM_MAIN;
     sVerMismatch = 0; /* fresh session, fresh cross-check */
     { s32 pi_; for (pi_ = 0; pi_ < 8; pi_++) { sPingMs[pi_] = -1; } }
@@ -928,8 +1013,9 @@ void net_menu_update(struct Controller* controller) {
                 sState = OM_MAIN;
                 play_sound2(SOUND_MENU_GO_BACK);
             } else if ((btn & A_BUTTON) && sGameCount > 0) {
-                /* join the highlighted room by its code */
+                /* join the highlighted room by its code; Z held = WATCH ONLY */
                 s32 i;
+                bool watch = (controller->button & Z_TRIG) != 0;
                 sLastErr = 0;
                 for (i = 0; i < CODE_LEN; i++) {
                     char c = sGames[sGameSel].code[i];
@@ -939,7 +1025,9 @@ void net_menu_update(struct Controller* controller) {
                 sNodeId = netpak_session_join(sCode);
                 if (sNodeId >= 0) {
                     /* Room gone between LIST and JOIN -> join-or-create made
-                     * us node 0: take the host lobby (same rule as JOIN). */
+                     * us node 0: take the host lobby (same rule as JOIN). A
+                     * host can't watch its own room — spectating needs racers. */
+                    sSpectator = watch && (sNodeId != 0);
                     sState = (sNodeId == 0) ? OM_HOSTING : OM_JOINED;
                     play_sound2(SOUND_MENU_OK_CLICKED);
                 } else {
@@ -1017,6 +1105,8 @@ void net_menu_update(struct Controller* controller) {
                 netpak_session_leave();
                 sState = OM_MAIN;
                 sPeerCount = 0;
+                sSpectator = false;
+                sLobbySpecMask = 0;
                 play_sound2(SOUND_MENU_GO_BACK);
             } else if (btn & START_BUTTON) {
                 OnlineMsg m;
@@ -1025,6 +1115,7 @@ void net_menu_update(struct Controller* controller) {
                 sOnlineCourse = 0xFF; /* v32: course picked on the REAL course-select screen */
                 sOnlineCc = sCcSel;
                 m.tag = OLMSG_TAG;
+                m.spec = 0;
                 m.type = OLMSG_START;
                 m.course = sOnlineCourse;
                 m.pad = (u8) NETPAK_ROM_VERSION; /* version cross-check */
@@ -1071,6 +1162,8 @@ void net_menu_update(struct Controller* controller) {
                             sHostGonePolls = 0;
                             netpak_session_leave();
                             sPeerCount = 0;
+                            sSpectator = false;
+                            sLobbySpecMask = 0;
                             sState = OM_MAIN;
                             play_sound2(SOUND_MENU_GO_BACK);
                             break;
@@ -1101,6 +1194,7 @@ void net_menu_update(struct Controller* controller) {
                 sOnlineCourse = kCourses[sCourseSel].id;
                 sOnlineCc = sCcSel;
                 m.tag = OLMSG_TAG;
+                m.spec = 0;
                 m.type = OLMSG_START;
                 m.course = sOnlineCourse;
                 m.pad = (u8) NETPAK_ROM_VERSION; /* version cross-check */
@@ -1121,6 +1215,8 @@ void net_menu_update(struct Controller* controller) {
                 netpak_session_leave();
                 sState = OM_MAIN;
                 sPeerCount = 0;
+                sSpectator = false;
+                sLobbySpecMask = 0;
                 play_sound2(SOUND_MENU_GO_BACK);
             }
             break;
@@ -1150,11 +1246,15 @@ void net_menu_update(struct Controller* controller) {
             if (btn & B_BUTTON) {
                 sState = OM_MAIN;
                 play_sound2(SOUND_MENU_GO_BACK);
-            } else if (btn & A_BUTTON) { /* confirm the code -> join */
+            } else if (btn & A_BUTTON) { /* confirm the code -> join (Z held = WATCH) */
                 if (netpak_present() && (netpak_status() & NETPAK_STATUS_LINK_UP)) {
+                    bool watch = (controller->button & Z_TRIG) != 0;
                     sLastErr = 0;
                     sNodeId = netpak_session_join(sCode);
                     if (sNodeId >= 0) {
+                        sSpectator = watch && (sNodeId != 0);
+                        netpak_debug_poke(0x5B000000u | (watch ? 0x100u : 0u) |
+                                          ((u32) sNodeId & 0xFFu)); /* join dbg */
                         /* Join-or-create: if the room didn't exist, the relay
                          * created it and we're node 0 — the de-facto host. Give
                          * that player the HOST lobby (course picker + START)
@@ -1372,7 +1472,7 @@ void net_menu_render(void) {
                 y += 0xC;
             }
             set_text_color(TEXT_YELLOW);
-            print_text1_center_mode_1(0xA0, 0xB8, "A  JOIN   R  REFRESH", 0, 0.6f, 0.6f);
+            print_text1_center_mode_1(0xA0, 0xB8, "A  JOIN   Z A  WATCH   R  REFRESH", 0, 0.55f, 0.55f);
             print_text1_center_mode_1(0xA0, 0xC8, "B  BACK", 0, 0.7f, 0.7f);
             break;
         }
@@ -1405,7 +1505,7 @@ void net_menu_render(void) {
             print_text1_center_mode_1(0xA0, 0x78, "PLAYERS", 0, 0.7f, 0.7f);
             set_text_color(TEXT_YELLOW);
             { /* self: show the actual player name (falls back to YOU) */
-                char self[NAME_LEN + 1];
+                char self[NAME_LEN + 4]; /* +3: " W" watcher tag */
                 s32 end = NAME_LEN;
                 while (end > 0 && sName[end - 1] == ' ') {
                     end--;
@@ -1414,10 +1514,24 @@ void net_menu_render(void) {
                     self[i] = sName[i];
                 }
                 self[end] = '\0';
+                if (sSpectator) { /* self is watching, not racing */
+                    s32 sn = end;
+                    self[sn++] = ' ';
+                    self[sn++] = ' ';
+                    self[sn++] = 'W';
+                    self[sn] = '\0';
+                    set_text_color(TEXT_BLUE);
+                }
                 print_text1_center_mode_1(0xA0, 0x88, end ? self : "YOU", 0, 0.7f, 0.7f);
+                set_text_color(TEXT_YELLOW);
             }
             y = 0x94;
             for (i = 0; i < sPeerCount && i < 5; i++) {
+                if (sLobbySpecMask & (1 << (sPeers[i].node_id & 7))) {
+                    set_text_color(TEXT_BLUE); /* watcher: shown dimmed-blue */
+                } else {
+                    set_text_color(TEXT_YELLOW);
+                }
                 print_text1_center_mode_1(0xA0, y, sPeers[i].name, 0, 0.7f, 0.7f);
                 if (sPeers[i].node_id != (u8) sNodeId && sPingMs[sPeers[i].node_id & 7] >= 0) {
                     char pingTxt[8];
@@ -1464,6 +1578,8 @@ void net_menu_render(void) {
             ch[1] = '\0';
             set_text_color(TEXT_GREEN);
             print_text1_center_mode_1(0xA0, 0x64, "ENTER CODE", 0, 0.8f, 0.8f);
+            set_text_color(TEXT_YELLOW);
+            print_text1_center_mode_1(0xA0, 0xB6, "A  JOIN   Z A  WATCH", 0, 0.55f, 0.55f);
             for (i = 0; i < CODE_LEN; i++) {
                 ch[0] = sCode[i];
                 set_text_color(i == sEntryPos ? TEXT_BLUE_GREEN_RED_CYCLE_1 : TEXT_YELLOW);

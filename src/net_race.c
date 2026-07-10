@@ -176,6 +176,7 @@ static void net_race_menu_test(void) {
             static s32 doRename = -1;
             static s32 isAlice;
             static s32 isCarol;
+            static s32 isWanda; /* w* names: join as SPECTATOR (Z+A) */
             static s32 havePreset;
             if (doRename < 0) {
                 char nm[16];
@@ -187,6 +188,7 @@ static void net_race_menu_test(void) {
                            nm[4] == 'e' && nm[5] == '\0');
                 isCarol = (nm[0] == 'c' && nm[1] == 'a' && nm[2] == 'r' && nm[3] == 'o' &&
                            nm[4] == 'l' && nm[5] == '\0');
+                isWanda = (nm[0] == 'w'); /* any w-name watches */
                 netpak_get_room_code(rc_);
                 havePreset = (rc_[0] != '\0');
             }
@@ -218,14 +220,15 @@ static void net_race_menu_test(void) {
                         case 6: press = A_BUTTON; break; /* -> OM_FIND (lists) */
                         case 12: press = R_TRIG;  break; /* refresh (dwell) */
                         case 18: press = R_TRIG;  break; /* refresh (dwell) */
-                        case 24: press = A_BUTTON; break; /* join top listing */
+                        case 24: press = isWanda ? (A_BUTTON | Z_TRIG)
+                                                 : A_BUTTON; break; /* join top listing (Z = WATCH) */
                         default:
                             /* until the join lands: keep refreshing, then
                              * retry A. Both are no-ops once in OM_JOINED. */
                             if (onlineStep > 24 && (onlineStep % 6) == 0) {
                                 press = R_TRIG;
                             } else if (onlineStep > 24 && (onlineStep % 6) == 3) {
-                                press = A_BUTTON;
+                                press = isWanda ? (A_BUTTON | Z_TRIG) : A_BUTTON;
                             }
                             break;
                     }
@@ -253,7 +256,8 @@ static void net_race_menu_test(void) {
                 switch (onlineStep) {
                     case 1: press = D_JPAD;        break; /* cursor HOST -> JOIN */
                     case 2: press = A_BUTTON;      break; /* JOIN -> code entry (pre-filled) */
-                    case 3: press = A_BUTTON;      break; /* confirm code -> OM_JOINED */
+                    case 3: press = isWanda ? (A_BUTTON | Z_TRIG)
+                                            : A_BUTTON; break; /* confirm (Z = WATCH) */
                     default:
                         /* With explicit join (v4+) the room fills over ~10-30s as
                          * staggered instances walk the menus — starting blind put
@@ -1252,6 +1256,8 @@ static bool np_tape_snap_restore(void) {
 #endif
 static u16     sLsPrevBtn[NET_MAX_SLOTS]; /* last APPLIED buttons per player (edge derivation) */
 static s32     sLsMyPlayer = -1;
+static bool sLsLocalSpec;          /* latched at reset: this console WATCHES */
+static u32  sLsSpecMask;           /* latched at reset: spectator slot bits */
 static u32     sLsFrame;
 static u16     sLsSimSeed;   /* Path B: private sim RNG state (render can't drift it) */
 static bool    sLsRngActive; /* true while an online lockstep race is running */
@@ -1398,7 +1404,10 @@ u8  gNetSpecView;         /* SPEC_VIEW_* (global: GDB-pokeable) */
 static u8  sSpecSnap;     /* snap camera heading next follow (kart switched) */
 
 static s32 np_spectate_active(void) {
-    return NP_REPLAYING && gGamestate == RACING;
+    if (gGamestate != RACING) {
+        return 0;
+    }
+    return NP_REPLAYING || sLsLocalSpec; /* replay viewer OR live watcher */
 }
 
 /* Called from the 1P screen render (skybox_and_splitscreen.c) to hide the
@@ -1441,6 +1450,7 @@ static void net_lockstep_reset(void) {
     sLsFrame = 0;
     sLsMyPlayer = net_menu_node_id();
     sLsSimSeed = 0x1234; /* shared, identical on every console -> synced sim RNG */
+
 
     /* NOTE: the CPU-AI block zeroing that used to live here moved to
      * net_lockstep_prerace_clear() — zeroing at race entry ran AFTER the game
@@ -1523,6 +1533,30 @@ static void net_lockstep_reset(void) {
         NET_TAPE_HDR->rsvd[0] = NET_TAPE_HDR->rsvd[1] = NET_TAPE_HDR->rsvd[2] = 0;
     }
 #endif
+    /* SPECTATORS (phase 2): pre-drop every spectator slot — the kart is a
+     * deterministic CPU from frame 0 and no one ever waits on its inputs.
+     * The mask is host-authoritative (GO message), identical everywhere, so
+     * this is a pure function of shared state. Never during a tape replay:
+     * the tape's recorded roster wins there. */
+    {
+        extern u32 net_menu_spec_mask(void);
+        extern bool net_menu_local_spectator(void);
+        s32 sp;
+        sLsSpecMask = NP_REPLAYING ? 0u : net_menu_spec_mask();
+        sLsLocalSpec = !NP_REPLAYING && net_menu_local_spectator();
+        for (sp = 0; sp < NET_MAX_SLOTS; sp++) {
+            if ((sLsSpecMask >> sp) & 1u) {
+                sLsDropped[sp] = true;
+                sLsDropNever[sp] = true; /* CPU from frame 0 */
+                sLsDropLast[sp] = 0;
+            }
+        }
+        if (sLsSpecMask != 0u || sLsLocalSpec) {
+            netpak_debug_poke(0x5A000000u | (sLsSpecMask & 0xFFu) |
+                              (sLsLocalSpec ? 0x100u : 0u)); /* spec roster
+                              (0x59 is the item-use poke) */
+        }
+    }
     {
         /* seed the ring with an impossible frame, NOT zero: a zeroed slot
          * claims "frame 0, hash 0", so a peer's real frame-0 hash arriving
@@ -1592,7 +1626,7 @@ void net_lockstep_tick(void) {
     /* SPECTATOR: snapshot the raw local pad before the input-apply below
      * overwrites gControllers[] from the ring (read_controllers() ran just
      * before this call — main.c). Render-side camera code consumes it. */
-    if (racing && NP_REPLAYING) {
+    if (racing && (NP_REPLAYING || sLsLocalSpec)) {
         gNetSpecPad = gControllers[0].button;
     }
 
@@ -1920,7 +1954,7 @@ void net_lockstep_tick(void) {
         }
     } else
 #endif
-    if (!sLsStall && gIsGamePaused == 0) {
+    if (!sLsStall && gIsGamePaused == 0 && !sLsLocalSpec) {
         LsInput* s = &sLsInput[me][f % LS_RING];
         s->button = gControllers[0].button;
         s->stickX = (s8) gControllers[0].rawStickX;
@@ -1929,7 +1963,7 @@ void net_lockstep_tick(void) {
         s->frame = f;
     }
 
-    if (!NP_REPLAYING) {
+    if (!NP_REPLAYING && !sLsLocalSpec) {
         /* broadcast my last LS_REDUN frames (redundancy covers a dropped datagram) */
         base = (s32) f - (LS_REDUN - 1);
         if (base < 0) {
@@ -2255,7 +2289,7 @@ void net_lockstep_tick(void) {
                 netpak_peer_t peers[8];
                 s32 npeers = netpak_peers(peers, 8);
                 bool gone = (sLsStallTicks >= LS_DROP_HARD);
-                bool amArbiter = true;
+                bool amArbiter = !sLsLocalSpec; /* spectators never arbitrate */
                 if (npeers < 0 && sLsStallTicks < LS_DROP_HARD) {
                     amArbiter = false; /* peer table unavailable: don't self-elect
                                         * (multiple blind arbiters would each pick
@@ -2268,8 +2302,11 @@ void net_lockstep_tick(void) {
                         if ((s32) peers[i].node_id == missing) {
                             present = true;
                         }
-                        /* a lower-id node that is still present outranks me */
-                        if ((s32) peers[i].node_id < me && (s32) peers[i].node_id != missing) {
+                        /* a lower-id node that is still present outranks me —
+                         * unless it is a SPECTATOR (they never arbitrate; a
+                         * low-id watcher must not deadlock drop arbitration) */
+                        if ((s32) peers[i].node_id < me && (s32) peers[i].node_id != missing &&
+                            !((sLsSpecMask >> peers[i].node_id) & 1u)) {
                             amArbiter = false;
                         }
                     }
