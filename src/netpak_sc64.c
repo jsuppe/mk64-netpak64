@@ -438,8 +438,11 @@ void np_perf_sample(void) {
  * 0x8052F900, u64 sumCycles per section. Sections: 0 world-update
  * (func_802909F0), 1 player-actor collision, 2 course actors, 3 camera
  * (func_8001EE98), 4 kart physics (func_80028F70), 5 misc race calls,
- * 6 netpak_frame, 7 net_lockstep_tick. */
-static OSTime sPerfMark[12];
+ * 6 netpak_frame, 7 net_lockstep_tick, 8 func_8006E058 objects,
+ * 9 kart anim (func_8002276C), 12-15 particle pools inside func_8006E420:
+ * 12 pool0 (func_8006CEC0), 13 pool3 (func_8006C9B8), 14 pool1
+ * (func_8006C6AC), 15 onomatopoeia (func_8006D194). */
+static OSTime sPerfMark[16];
 
 void np_perf_enter(s32 k) {
     sPerfMark[k] = osGetTime();

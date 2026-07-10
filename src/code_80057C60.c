@@ -23,6 +23,11 @@
 #include "render_objects.h"
 #include "code_8006E9C0.h"
 #include "update_objects.h"
+
+/* netpak: per-pool perf brackets (sections 12-15) inside func_8006E420 fire
+ * ~240x/frame and cost ~0.7ms — profiling builds only. Flipping this shifts
+ * ROM layout, so re-record tapes (see ROM-LAYOUT-SENSITIVE SIM note). */
+#define NP_PERF_PTCL 0
 #include "code_80086E70.h"
 #include "effects.h"
 #include <assets/data_800E8700.h>
@@ -3638,6 +3643,11 @@ void func_80060504(Player* player, s16 arg1, s32 arg2, UNUSED s8 arg3, UNUSED s8
     s32 temp_v0;
     UNUSED s32 test;
 
+    s32 spawned = 0; /* netpak perf: the colour/transform tail below only
+        matters when this call actually spawned into the (dead) slot — the
+        slot is invisible otherwise and the tail is re-run at the next spawn.
+        random_int stays unconditional so the RNG stream is unchanged. */
+
     if ((player->kartProps & THROTTLE) == THROTTLE) {
         var_v0 = 5;
     } else {
@@ -3651,13 +3661,18 @@ void func_80060504(Player* player, s16 arg1, s32 arg2, UNUSED s8 arg3, UNUSED s8
             x = player->pos[0];
             set_particle_position_and_rotation(player, &player->particlePool0[arg1], x, y, z, 0, 0);
             init_particle_player(&player->particlePool0[arg1], 1, 0.5f);
+            spawned = 1;
         } else if (player->particlePool0[arg2].timer > 0) {
             y = player->pos[1] - 2.5;
             z = player->pos[2];
             x = player->pos[0];
             set_particle_position_and_rotation(player, &player->particlePool0[arg1], x, y, z, 0, 0);
             init_particle_player(&player->particlePool0[arg1], 1, 0.5f);
+            spawned = 1;
         }
+    }
+    if (!spawned) {
+        return;
     }
     player->particlePool0[arg1].unk_024 = 0.0f;
     if ((player->kartProps & THROTTLE) == THROTTLE) {
@@ -4263,12 +4278,6 @@ void func_80062AA8(Player* player, UNUSED s8 arg1, UNUSED s8 arg2, s8 index) {
 }
 
 void func_80062B18(f32* arg0, f32* arg1, f32* arg2, f32 arg3, f32 arg4, f32 arg5, u16 arg6, u16 arg7) {
-    UNUSED f32 pad;
-    f32 sp30;
-    f32 sp2C;
-    f32 sp28;
-    f32 temp_f20;
-
     //  Apply the matrix multiplication:
     //  Matrix is the Jacobian for cartesian to spherical coordinates?
     //  Get the change in r, theta, and phi for a change in x, y, z?
@@ -4279,27 +4288,28 @@ void func_80062B18(f32* arg0, f32* arg1, f32* arg2, f32 arg3, f32 arg4, f32 arg5
     // |      |     |                                                       |     |      |
     // | arg2 |     | sin(arg6)*cos(arg7)  sin(arg6)*sin(arg7)    cos(arg6) |     | arg5 |
     //
-    sp28 = sins(arg7);
-    sp2C = coss(arg6);
-    sp30 = coss(arg7);
-    temp_f20 = coss(arg6);
+    /* netpak perf: sins/coss are pure table lookups but opaque calls the
+     * compiler cannot CSE — the original body made 12 calls for 4 distinct
+     * values. One call each, identical expression trees: bit-exact. */
+    f32 sin6 = sins(arg6);
+    f32 cos6 = coss(arg6);
+    f32 sin7 = sins(arg7);
+    f32 cos7 = coss(arg7);
+
     //    = arg3 * cos(arg6) * cos(arg7) + arg4 * cos(arg6) * sin(arg7) - arg5 * sin(arg6)
-    *arg0 = (((arg3 * temp_f20) * sp30) + (arg4 * sp2C) * sp28) - (sins(arg6) * arg5);
+    *arg0 = (((arg3 * cos6) * cos7) + (arg4 * cos6) * sin7) - (sin6 * arg5);
 
-    temp_f20 = sins(arg7);
     //    = -arg3 * sin(arg7) + arg4 * cos(arg7)
-    *arg1 = (coss(arg7) * arg4) - (arg3 * temp_f20);
+    *arg1 = (cos7 * arg4) - (arg3 * sin7);
 
-    sp28 = sins(arg7);
-    sp2C = sins(arg6);
-    sp30 = coss(arg7);
-    temp_f20 = sins(arg6);
     //    = arg3 * sin(arg6) * cos(arg7) + arg4 * sin(arg6) * sin(arg7) + arg5 * cos(arg6)
-    *arg2 = (coss(arg6) * arg5) + (((arg3 * temp_f20) * sp30) + ((arg4 * sp2C) * sp28));
+    *arg2 = (cos6 * arg5) + (((arg3 * sin6) * cos7) + ((arg4 * sin6) * sin7));
 }
 
 void func_80062C74(Player* player, s16 arg1, UNUSED s32 arg2, UNUSED s32 arg3) {
-    f32 sp48[8] = { 4.5f, 4.5f, 4.5f, 4.5f, 4.5f, 5.5f, 4.5f, 6.5f };
+    /* netpak perf: static const — was a stack array rebuilt on every call
+     * (~80 calls/frame online: 10 slots x 8 karts) */
+    static const f32 sp48[8] = { 4.5f, 4.5f, 4.5f, 4.5f, 4.5f, 5.5f, 4.5f, 6.5f };
     f32 var_f6;
     f32 sp40;
     f32 sp3C;
@@ -4311,6 +4321,17 @@ void func_80062C74(Player* player, s16 arg1, UNUSED s32 arg2, UNUSED s32 arg3) {
         player->particlePool0[arg1].isAlive = 0;
         player->particlePool0[arg1].timer = 0;
         player->particlePool0[arg1].type = NO_PARTICLE;
+    }
+    /* netpak perf: below this point everything is visual-only (scale/alpha
+     * fade, billboard transform) and the renderer (func_8006D474) draws this
+     * pool only when the kart's SIDE_OF_KART visibility bit is set. Off-screen
+     * karts keep the exact timer/death lifecycle above (spawn cadence and RNG
+     * consumption stay deterministic) and skip the rest. Validated by
+     * within-build record+replay AND harness8 (8 instances = 8 different
+     * cameras must stay hash-identical); cross-build tape replay CANNOT
+     * validate this (see ROM-LAYOUT-SENSITIVE SIM in HARNESS_NOTES.md). */
+    if (gActiveScreenMode == SCREEN_MODE_1P && !(player->unk_002 & SIDE_OF_KART)) {
+        return;
     }
     player->particlePool0[arg1].unk_018 = 2.0f;
     if (player->particlePool0[arg1].unk_040 == 0) {
@@ -6882,19 +6903,36 @@ void func_8006E058(void) {
 
 void func_8006E420(Player* player, s8 playerIndex, s8 arg2) {
     // arg2 is always 0
+#if NP_PERF_PTCL
+    extern void np_perf_enter(s32 k); /* perf brackets (netpak_sc64.c) */
+    extern void np_perf_leave(s32 k);
+#define NP_PB(k) np_perf_enter(k)
+#define NP_PE(k) np_perf_leave(k)
+#else
+#define NP_PB(k)
+#define NP_PE(k)
+#endif
     s16 temp_s0;
 
     if ((player->type & PLAYER_EXISTS) == PLAYER_EXISTS) {
         if ((player->type & PLAYER_HUMAN) == PLAYER_HUMAN) {
+            NP_PB(15);
             func_8006D194(player, playerIndex, arg2);
+            NP_PE(15);
         }
 
         for (temp_s0 = 0; temp_s0 < 10; ++temp_s0) {
+            NP_PB(12);
             func_8006CEC0(player, temp_s0, playerIndex, arg2);
+            NP_PE(12);
             if (((player->type & PLAYER_HUMAN) == PLAYER_HUMAN) || (gGamestate == ENDING)) {
+                NP_PB(13);
                 func_8006C9B8(player, temp_s0, playerIndex, arg2);
+                NP_PE(13);
             }
+            NP_PB(14);
             func_8006C6AC(player, temp_s0, playerIndex, arg2);
+            NP_PE(14);
         }
 
         if (gModeSelection == BATTLE) {
