@@ -6,6 +6,26 @@ commit, build flags, and md5. Rollback ROMs live in
 them, named `<version>_<md5>.tape` — a tape verifies ONLY the exact ROM that
 recorded it (sim is ROM-layout-sensitive; see HARNESS_NOTES.md).
 
+## v53 — 2026-07-10 — SPECTATOR MODE
+- commit: (tagged `v53`) — 4fa079c22 + d537143fa on top of v52
+- product ROM: md5 4fc0825c (`releases/v53_product_4fc0825c.z64`)
+- build: same as v52 (`GCC=1 ./buildtest.sh [product]`)
+- PROTOCOL CHANGE: OnlineMsg 12->13 bytes (spec mask in GO) — v52 and v53
+  cannot share a room (version gate blocks them; also the length check
+  silently drops short messages).
+- new: hold Z while confirming a join = enter the room as a SPECTATOR
+  (watcher shown blue + W in the lobby; in-race: no HUD, SPECTATING <name>,
+  L/R cycle karts, C-right chase / C-down Lakitu rear / C-up front /
+  C-left cinematic). Replay tapes get the same camera controls.
+- regression triage additions:
+  | Symptom | Suspect |
+  |---|---|
+  | Lobby/READY/GO or race-start issues | OnlineMsg size change (4fa079c22) |
+  | An extra CPU kart behaving oddly | spectator pre-drop path (4fa079c22) |
+  | Camera/HUD weirdness during normal racing | phase-1 spectator layer (d537143fa) — should be inert unless replaying/watching |
+- gates: 3-instance live spectator race hash-identical end-to-end; solo
+  replay 279/279; spectator visuals verified by screenshot.
+
 ## v52 — 2026-07-10 — THE GCC ADOPTION CUT
 - commit: (tagged `v52`) — version bump on top of 8e699f352
 - product ROM: md5 0faae383 (`releases/v52_product_0faae383.z64`)
