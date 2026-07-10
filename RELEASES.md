@@ -6,6 +6,20 @@ commit, build flags, and md5. Rollback ROMs live in
 them, named `<version>_<md5>.tape` — a tape verifies ONLY the exact ROM that
 recorded it (sim is ROM-layout-sensitive; see HARNESS_NOTES.md).
 
+## v55 — 2026-07-10 — RELAY DIAGNOSTICS
+- commit: (tagged `v55`) — 628572a13
+- product ROM: md5 b99e0119 (`releases/v55_product_b99e0119.z64`)
+- new: diagnostic uplink to the relay (sink node 0xFE): batched debug pokes
+  (console pokes observable at last), 2s wedge beacon (gamestate/df/stall/
+  gate flags), 10s in-race perf summary (real-hardware sim timings). Paired
+  with the relay-side passive monitor (np64-relay diag.rs): per-room JSONL
+  under netpak/diag/ — simrate, DESYNC detection, block-ack latency, race
+  summaries. Viewer: `python3 netpak/relaytail.py [-f] [room]`.
+- gameplay-inert: telemetry only, session-gated, ~200B/s worst case.
+- gates: loopback replay 302/302 + 3p/spectator identical; uplink verified
+  end-to-end on the deployed relay. Cross-machine smoke PENDING (balthazar
+  asleep at cut time) — transport path unchanged from v54 which passed it.
+
 ## v54 — 2026-07-10 — RELIABLE RACE-ENTRY (start-freeze fix)
 - commit: (tagged `v54`) — 1f3cd35f8
 - product ROM: md5 222067bb (`releases/v54_product_222067bb.z64`)
