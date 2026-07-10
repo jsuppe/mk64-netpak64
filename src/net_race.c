@@ -1283,6 +1283,24 @@ typedef struct {
     u8  data[LSBLK_CHUNK];
 } LsBlkMsg;
 static bool sBlkApplied;
+/* RELIABLE block transfer (v54): the old ONE-SHOT chunk stream wedged any
+ * joiner that lost a UDP chunk or was still on the course-load screen when
+ * the chunks flew by (its tick was not draining yet) — the joiner then held
+ * the gate forever: black screen, while the host raced on and eventually
+ * dropped it. This was invisible on loopback (no loss, aligned load times) —
+ * it needs a real network + uneven load times, e.g. console-host + a slow
+ * Vulkan-shader-compile joiner. Now: joiners ACK completion (LSBLKACK) and
+ * the host RE-SWEEPS the block until every peer ACKed (or ~30s). Duplicate
+ * chunks are deduped by a seq bitmask (the old byte-count double-counted). */
+#define LSBLKACK_TAG 0x41 /* 'A' */
+typedef struct {
+    u8 tag;  /* LSBLKACK_TAG */
+    u8 node; /* sender's node id */
+    u16 pad;
+} LsBlkAckMsg;
+static u32  sBlkSeqMask;  /* joiner: chunk seqs applied (bit per seq) */
+static u8   sBlkAckMask;  /* host: peers that ACKed (bit per node id) */
+static u16  sBlkTicks;    /* host: resend window age */
 
 /* LIVE DESYNC DETECTOR: consoles broadcast (frame, sim-hash) every 16 frames
  * on ch0 (tag 0x48 'H'); each console checks peers' hashes against its own
@@ -1471,6 +1489,9 @@ static void net_lockstep_reset(void) {
     sBlkApplied = false;
     sBlkGot = 0;
     sBlkSendPos = 0;
+    sBlkSeqMask = 0;
+    sBlkAckMask = 0;
+    sBlkTicks = 0;
     sLsDesync = false;
     sLsDesyncFrame = 0;
     sLsHashLastDf = 0xFFFFFFFFu;
@@ -1907,6 +1928,44 @@ void net_lockstep_tick(void) {
 #endif
             }
         }
+    } else if (me == 0 && !NP_REPLAYING && np > 1) {
+        /* RELIABLE DELIVERY (v54): keep re-sweeping the block until every peer
+         * ACKed it. The first pass above races the joiners' course loads and
+         * rides raw UDP — a lost or too-early chunk used to wedge the joiner
+         * at the gate forever (black screen at race start; host drops them and
+         * races CPUs). One chunk per 4 ticks is ~7KB/s per un-ACKed peer,
+         * negligible next to the input stream; stops on full ACK or ~30s. */
+        u32 blkTotal = (u32) (LS_CPU_STATE_END - unk_cpu_vehicles_camera_path_pad);
+        u8 want = 0;
+        for (i = 1; i < np && i < 8; i++) {
+            want |= (u8) (1 << i);
+        }
+        if ((sBlkAckMask & want) != want && sBlkTicks < 900) {
+            sBlkTicks++;
+            if ((sBlkTicks & 3) == 0) {
+                LsBlkMsg bm;
+                u32 len;
+                if (sBlkSendPos >= blkTotal) {
+                    sBlkSendPos = 0; /* wrap: next sweep */
+                }
+                len = blkTotal - sBlkSendPos;
+                if (len > LSBLK_CHUNK) {
+                    len = LSBLK_CHUNK;
+                }
+                bm.tag = LSBLK_TAG;
+                bm.seq = (u8) (sBlkSendPos / LSBLK_CHUNK);
+                bm.offset = (u16) sBlkSendPos;
+                bm.len = (u16) len;
+                bm.total = (u16) blkTotal;
+                memcpy(bm.data, unk_cpu_vehicles_camera_path_pad + sBlkSendPos, len);
+                for (i = 1; i < np && i < 8; i++) {
+                    if (!(sBlkAckMask & (u8) (1 << i))) {
+                        netpak_send((u8) i, 1, &bm, (u16) (8 + len));
+                    }
+                }
+                sBlkSendPos += len;
+            }
+        }
     }
 
     /* Path B — isolated sim RNG. Load the sim's private RNG state into the shared
@@ -2065,15 +2124,42 @@ void net_lockstep_tick(void) {
         } else if (pkt.ch == 1 && pkt.len >= 8 && pkt.data[0] == LSBLK_TAG) {
             LsBlkMsg* bm = (LsBlkMsg*) pkt.data;
             u32 blkTotal = (u32) (LS_CPU_STATE_END - unk_cpu_vehicles_camera_path_pad);
-            if (!sBlkApplied && bm->total == blkTotal && (u32) bm->offset + bm->len <= blkTotal) {
-                memcpy(unk_cpu_vehicles_camera_path_pad + bm->offset, bm->data, bm->len);
-                sBlkGot += bm->len;
-                if (sBlkGot >= blkTotal) {
+            u32 nChunks = (blkTotal + LSBLK_CHUNK - 1u) / LSBLK_CHUNK;
+            if (!sBlkApplied && bm->total == blkTotal && (u32) bm->offset + bm->len <= blkTotal &&
+                bm->seq < 32) {
+                /* dedupe by seq — the host RESENDS now (v54); the old byte
+                 * count double-counted duplicates and could declare the block
+                 * complete with chunks missing */
+                if (!(sBlkSeqMask & (1u << bm->seq))) {
+                    memcpy(unk_cpu_vehicles_camera_path_pad + bm->offset, bm->data, bm->len);
+                    sBlkSeqMask |= (1u << bm->seq);
+                    sBlkGot += bm->len;
+                }
+                if (nChunks < 32 && sBlkSeqMask == (1u << nChunks) - 1u) {
                     sBlkApplied = true;
 #if NET_DIAG
                     np_tape_snap_save(); /* joiner holds the same agreed state */
 #endif
+                    netpak_debug_poke(0x43000000u | (sBlkGot & 0xFFFFFFu)); /* block done */
                 }
+            }
+            /* ACK to the sender: on completion, and again for every duplicate
+             * chunk that arrives after — a lost ACK just gets re-answered on
+             * the host's next sweep. Replays are self-contained: never ACK. */
+            if (sBlkApplied && !NP_REPLAYING && me != 0) {
+                LsBlkAckMsg am;
+                am.tag = LSBLKACK_TAG;
+                am.node = (u8) me;
+                am.pad = 0;
+                netpak_send(pkt.src, 1, &am, sizeof(am));
+            }
+        } else if (pkt.ch == 1 && pkt.len >= 4 && pkt.data[0] == LSBLKACK_TAG) {
+            /* host: peer confirms the whole block landed — stop resending to it */
+            if (me == 0 && pkt.src < 8) {
+                if (!(sBlkAckMask & (u8) (1 << pkt.src))) {
+                    netpak_debug_poke(0x44000000u | pkt.src); /* first ACK seen */
+                }
+                sBlkAckMask |= (u8) (1 << pkt.src);
             }
         } else if (pkt.ch == 0 && pkt.len >= 8 && pkt.data[0] == LSDROP_TAG) {
             /* arbiter says player X is gone: adopt X's last inputs + last frame L.
