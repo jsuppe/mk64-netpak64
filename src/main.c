@@ -685,6 +685,7 @@ void race_logic_loop(void) {
             net_lockstep_stall_indicator();  /* yellow pulse while waiting on a peer */
             net_render_cull_diag(); /* TEMP: drawn-chunk vs kart-section telemetry */
             net_autodrive_overlay(); /* test builds: show the AI's injected inputs */
+            net_spectate_overlay(); /* replay viewer: "SPECTATING <kart> <view>" */
             if (!gEnableDebugMode) {
                 D_800DC514 = false;
             } else {
@@ -912,8 +913,14 @@ void race_logic_loop(void) {
         }
     }
     func_802A4300();
-    func_800591B4();
-    func_80093E20();
+    { /* netpak spectator: this end-of-frame pass draws the minimap, rank and
+       * position ladder — hide it with the rest of the driver HUD. */
+        extern s32 net_spectate_hides_hud(void);
+        if (!net_spectate_hides_hud()) {
+            func_800591B4();
+            func_80093E20();
+        }
+    }
 #if DVDL
     display_dvdl();
 #endif

@@ -858,9 +858,15 @@ void render_player_one_1p_screen(void) {
     if (D_800DC5B8 != 0) {
         func_80058C20(RENDER_SCREEN_MODE_1P_PLAYER_ONE);
     }
-    func_80093A5C(RENDER_SCREEN_MODE_1P_PLAYER_ONE);
-    if (D_800DC5B8 != 0) {
-        render_hud(RENDER_SCREEN_MODE_1P_PLAYER_ONE);
+    { /* netpak spectator: hide the whole driver HUD (render_hud AND the
+       * object/menu 2D pass — rank, VS ladder, minimap) while spectating */
+        extern s32 net_spectate_hides_hud(void);
+        if (!net_spectate_hides_hud()) {
+            func_80093A5C(RENDER_SCREEN_MODE_1P_PLAYER_ONE);
+            if (D_800DC5B8 != 0) {
+                render_hud(RENDER_SCREEN_MODE_1P_PLAYER_ONE);
+            }
+        }
     }
 }
 

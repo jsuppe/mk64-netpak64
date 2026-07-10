@@ -30,6 +30,8 @@
 #include "path.h"          /* gTrackPaths / gNearestPathPointByPlayerId — waypoint autodrive */
 
 extern u16 atan2s(f32, f32);            /* racing/math_util.h */
+extern f32 sins(u16);                   /* racing/math_util.h — spectator front cam */
+extern f32 coss(u16);
 extern u16 gPathCountByPathIndex[];     /* points per path (path.h D_801645C8) */
 extern hud_player playerHUD[];          /* itemOverride — forced-item test */
 
@@ -1375,6 +1377,38 @@ static u8      sCamSimArr[0x4E0];         /* sim's copy of the same region, save
     as sCamLoc1/sCamLocD300; sim's copy still restored by cam_pop. */
 static bool    sCamLocArrInit;
 
+/* === SPECTATOR (task #spectator, phase 1: replay viewer) ===================
+ * While a tape replay runs, the local pad drives nothing (all karts come from
+ * the tape) — so it becomes the spectator controller: L/R cycle the followed
+ * kart, C-right standard chase, C-down Lakitu rear, C-up front-facing,
+ * C-left cinematic path cam. All camera work happens INSIDE the
+ * cam_push/cam_pop isolation window (render-side, after net_lockstep_rng_save)
+ * so nothing leaks into the deterministic sim: same fences as the joiner
+ * chase-cam. The raw pad is snapshotted at net_lockstep_tick entry because
+ * the input-apply overwrites gControllers[0..7] from the ring every frame. */
+#define SPEC_VIEW_CHASE 0 /* C-right: standard follow (func_8001E45C path) */
+#define SPEC_VIEW_LAKITU 1 /* C-down: Lakitu's higher/floatier rear cam */
+#define SPEC_VIEW_FRONT 2 /* C-up: ahead of the kart, facing it */
+#define SPEC_VIEW_CINE 3 /* C-left: course-path cinematic (func_8001A588) */
+u16 gNetSpecPad;          /* raw local pad buttons (pre input-apply); global so
+                           * the GDB harness can drive the spectator headless */
+static u16 sSpecPadPrev;  /* render-rate edge detect */
+u8  gNetSpecKart;         /* followed kart 0..np-1 (global: GDB-pokeable) */
+u8  gNetSpecView;         /* SPEC_VIEW_* (global: GDB-pokeable) */
+static u8  sSpecSnap;     /* snap camera heading next follow (kart switched) */
+
+static s32 np_spectate_active(void) {
+    return NP_REPLAYING && gGamestate == RACING;
+}
+
+/* Called from the 1P screen render (skybox_and_splitscreen.c) to hide the
+ * driver HUD while spectating: BOTH the render_hud pass and the object/menu
+ * 2D pass (func_80093A5C — rank, VS position ladder, minimap live there).
+ * Pause keeps the HUD so its menu stays visible. */
+s32 net_spectate_hides_hud(void) {
+    return np_spectate_active() && gIsGamePaused == 0;
+}
+
 /* GDB-probe anchors: the ares debug stub reads these to find the (static)
  * render-side camera state for cross-instance invariant checks (camprobe.py):
  * [0]=&sCamLoc1 (joiner's local camera) [1]=&sCamSim1 (sim camera save)
@@ -1554,6 +1588,13 @@ void net_lockstep_tick(void) {
     s32 me, np, i, base;
     u32 f, df;
     s32 racing = (gGamestate == RACING);
+
+    /* SPECTATOR: snapshot the raw local pad before the input-apply below
+     * overwrites gControllers[] from the ring (read_controllers() ran just
+     * before this call — main.c). Render-side camera code consumes it. */
+    if (racing && NP_REPLAYING) {
+        gNetSpecPad = gControllers[0].button;
+    }
 
     if (!netpak_present() || !net_menu_online_active() || !racing) {
 #if NET_DIAG
@@ -2810,8 +2851,39 @@ extern u16 D_801645D0[];
 void net_lockstep_cam_push(void) {
 #if NET_LOCKSTEP
     s32 ls = net_lockstep_local_slot();
+    s32 spec = np_spectate_active();
+    s32 view;
     u32 blk;
     s32 pi;
+
+    /* SPECTATOR input (render-rate edges off the pre-apply pad snapshot):
+     * L/R cycle the followed kart, C buttons pick the view. */
+    if (spec) {
+        u16 press = (u16) (gNetSpecPad & ~sSpecPadPrev);
+        sSpecPadPrev = gNetSpecPad;
+        if (press & R_TRIG) {
+            gNetSpecKart = (u8) ((gNetSpecKart + 1) & 7);
+            sSpecSnap = 1;
+        }
+        if (press & L_TRIG) {
+            gNetSpecKart = (u8) ((gNetSpecKart + 7) & 7);
+            sSpecSnap = 1;
+        }
+        if (press & R_CBUTTONS) {
+            gNetSpecView = SPEC_VIEW_CHASE;
+            sSpecSnap = 1;
+        }
+        if (press & D_CBUTTONS) {
+            gNetSpecView = SPEC_VIEW_LAKITU;
+        }
+        if (press & U_CBUTTONS) {
+            gNetSpecView = SPEC_VIEW_FRONT;
+        }
+        if (press & L_CBUTTONS) {
+            gNetSpecView = SPEC_VIEW_CINE;
+        }
+    }
+    view = spec ? (s32) gNetSpecKart : ls;
 
     /* RENDER-WRITE ISOLATION (all consoles, host included): the render mutates
      * Player.unk_DB4 (camera-bounce/wobble decay: camera.c follow + the kart
@@ -2831,14 +2903,15 @@ void net_lockstep_cam_push(void) {
 #endif
 
     sCamActive = 0;
-    if (ls == 0) {
+    if (ls == 0 && !spec) {
         return; /* host / offline: slot 0 is already this console's kart */
     }
     blk = (u32) (LS_CPU_STATE_END - unk_cpu_vehicles_camera_path_pad);
     if (blk > LS_CAMBLK_MAX) {
         return; /* safety: never overflow the save buffers */
     }
-    sCamActive = ls;
+    sCamActive = spec ? (0x10 | (s32) gNetSpecView) : ls; /* nonzero = pop restores */
+
 
     /* save the sim's camera state (must be byte-identical again after pop) */
     memcpy(sCamSimBlk, unk_cpu_vehicles_camera_path_pad, blk);
@@ -2880,7 +2953,16 @@ void net_lockstep_cam_push(void) {
         sCamLocArrInit = true;
     }
     memcpy(D_801645D0, sCamLocArr, sizeof(sCamLocArr));
-    camera1->playerId = (s16) ls;
+    camera1->playerId = (s16) view;
+
+    /* SPECTATOR: kart switch (or return to chase) — snap the follow heading
+     * to the new kart so the smoothed chase doesn't whip across the course.
+     * Same snap func_8001F87C does at the intro edge. */
+    if (spec && sSpecSnap) {
+        sSpecSnap = 0;
+        camera1->rot[1] = gPlayers[view].rotation[1];
+        camera1->unk_2C = gPlayers[view].rotation[1];
+    }
 
     /* ROOT-CAUSE FIX: the intro→chase camera-mode transition (func_8001F87C) is
      * edge-triggered — it fires only on the exact frame the shared frame-counter
@@ -2890,10 +2972,10 @@ void net_lockstep_cam_push(void) {
      * Do the transition ourselves: once the local kart is racing (staging bits
      * clear), force chase mode 1 and snap the camera heading to the local kart,
      * exactly what F87C does at the edge. */
-    if ((D_80152300[0] == 8) && !(gPlayers[ls].type & (PLAYER_STAGING | PLAYER_START_SEQUENCE))) {
+    if ((D_80152300[0] == 8) && !(gPlayers[view].type & (PLAYER_STAGING | PLAYER_START_SEQUENCE))) {
         D_80152300[0] = 1;
-        camera1->rot[1] = gPlayers[ls].rotation[1];
-        camera1->unk_2C = gPlayers[ls].rotation[1];
+        camera1->rot[1] = gPlayers[view].rotation[1];
+        camera1->unk_2C = gPlayers[view].rotation[1];
         /* v42: RE-SEED the tuning region at this edge. sCamLocArr was seeded
          * at the FIRST render frame — during the intro flyover, when the
          * zoom/height arrays hold sky-high intro values. The sim's copy gets
@@ -2909,7 +2991,42 @@ void net_lockstep_cam_push(void) {
      * height/zoom arrays), which 1P mode only maintains for screen 0 — passing ls
      * left those zeroed, putting the camera on the ground at the kart's tail. The
      * kart to follow is carried by the Player* + camera->playerId, not the index. */
-    func_8001EE98(&gPlayers[ls], camera1, 0);
+    if (!spec || gNetSpecView == SPEC_VIEW_CHASE) {
+        if (spec && D_80152300[0] == 3) {
+            D_80152300[0] = 1; /* leaving cinematic: back to chase */
+        }
+        func_8001EE98(&gPlayers[view], camera1, 0);
+    } else if (gNetSpecView == SPEC_VIEW_LAKITU) {
+        /* Lakitu's rescue camera, raised and pulled back for a hovering
+         * rear view (raw E8E8 sits at bumper height, too close) */
+        extern void func_8001E8E8(Camera*, Player*, s8);
+        D_80152300[0] = 1;
+        func_8001E8E8(camera1, &gPlayers[view], 0);
+        camera1->pos[0] += (camera1->pos[0] - camera1->lookAt[0]) * 0.6f;
+        camera1->pos[2] += (camera1->pos[2] - camera1->lookAt[2]) * 0.6f;
+        camera1->pos[1] += 20.0f;
+    } else if (gNetSpecView == SPEC_VIEW_FRONT) {
+        /* ahead of the kart, looking back at it. Kart forward in world =
+         * (-sins(yaw), +coss(yaw)) — same convention the exhaust placement
+         * uses (set_particle_position_and_rotation negates rotation[1]). */
+        Player* p = &gPlayers[view];
+        f32 fx = -sins((u16) p->rotation[1]);
+        f32 fz = coss((u16) p->rotation[1]);
+        D_80152300[0] = 1;
+        camera1->pos[0] = p->pos[0] + fx * 90.0f;
+        camera1->pos[2] = p->pos[2] + fz * 90.0f;
+        camera1->pos[1] = p->pos[1] + 24.0f;
+        camera1->lookAt[0] = p->pos[0];
+        camera1->lookAt[1] = p->pos[1] + 6.0f;
+        camera1->lookAt[2] = p->pos[2];
+        camera1->rot[1] = (s16) (p->rotation[1] + 0x8000);
+        camera1->unk_2C = camera1->rot[1];
+    } else { /* SPEC_VIEW_CINE: course-path cinematic; consumes RNG but we are
+              * render-side, after net_lockstep_rng_save (Path-B isolation) */
+        extern void func_8001A588(u16*, Camera*, Player*, s8, s32);
+        D_80152300[0] = 3;
+        func_8001A588(&D_80152300[0], camera1, &gPlayers[view], 0, 0);
+    }
 
     /* Course-SEGMENT culling: the renderer picks the visible course chunk from
      * wrapper->player's track section (render_courses.c uses
@@ -2917,7 +3034,7 @@ void net_lockstep_cam_push(void) {
      * hardwired to gPlayers[0] — so a camera far from slot 0 renders slot 0's
      * chunk and void everywhere else ("karts floating off-track"). Point the
      * renderer at the LOCAL kart for this render; pop restores it. */
-    D_800DC5EC->player = &gPlayers[ls];
+    D_800DC5EC->player = &gPlayers[view];
 #endif
 }
 
@@ -2940,14 +3057,16 @@ void net_lockstep_cam_pop(void) {
      * camera so engine/doppler/pan follow OUR kart ("the joiner seems to be
      * listening to the host's audio"). Menus reset the pointer to camera1
      * (func_800C2474), so refresh every frame during the race. */
-    if (net_lockstep_local_slot() != 0 && sCamLocInit) {
+    if ((net_lockstep_local_slot() != 0 || np_spectate_active()) && sCamLocInit) {
         extern u8 gNetAudKart[4];
         gCopyCamera[0] = &sCamLoc1;
         /* ...and the per-screen-player kart-audio subsystem (engine, exhaust,
          * skids — audio/external.c func_800C8CCC loop) reads OUR kart, not
-         * kart 0 ("all the sounds I hear are coming from the host", v45). */
-        gNetAudKart[0] = (u8) net_lockstep_local_slot();
+         * kart 0 ("all the sounds I hear are coming from the host", v45).
+         * Spectator: listen to the spectated kart. */
+        gNetAudKart[0] = np_spectate_active() ? gNetSpecKart : (u8) net_lockstep_local_slot();
     }
+
 
 #if NET_MENU_TEST || NET_DIAG
     { /* sample the LOCAL view camera before restoring the sim's (0xDF poke
@@ -3157,6 +3276,50 @@ void net_autodrive_overlay(void) {
     gDPFillRectangle(gDisplayListHead++, 138, 206, 150, 218);
     gDPPipeSync(gDisplayListHead++);
     gDPSetCycleType(gDisplayListHead++, G_CYC_1CYCLE);
+#endif
+}
+
+/* SPECTATOR status line: "SPECTATING <name|KART N>" + the active view, drawn
+ * top-center while the master DL is open (called from race_logic_loop right
+ * after cam_pop, same slot as the indicators). Uses the menu glyph printer —
+ * glyph LUT residency during RACING verified on ares. */
+void net_spectate_overlay(void) {
+#if NET_LOCKSTEP
+    extern void set_text_color(s32);
+    extern void print_text1_center_mode_1(s32, s32, char*, s32, f32, f32);
+    extern const char* net_menu_slot_name(s32);
+    static char buf[28];
+    static const char* kView[4] = { "", " REAR", " FRONT", " CINEMA" };
+    const char* nm;
+    char* d = buf;
+    const char* s;
+    s32 k;
+
+    if (!np_spectate_active()) {
+        return;
+    }
+    for (s = "SPECTATING "; *s != '\0'; s++) {
+        *d++ = *s;
+    }
+    nm = net_menu_slot_name((s32) gNetSpecKart);
+    if (nm != NULL && nm[0] != '\0') {
+        for (k = 0; nm[k] != '\0' && k < 8; k++) {
+            *d++ = nm[k];
+        }
+    } else {
+        *d++ = 'K';
+        *d++ = 'A';
+        *d++ = 'R';
+        *d++ = 'T';
+        *d++ = ' ';
+        *d++ = (char) ('1' + gNetSpecKart);
+    }
+    for (s = kView[gNetSpecView & 3]; *s != '\0'; s++) {
+        *d++ = *s;
+    }
+    *d = '\0';
+    set_text_color(TEXT_YELLOW);
+    print_text1_center_mode_1(160, 22, buf, 0, 0.7f, 0.7f);
 #endif
 }
 

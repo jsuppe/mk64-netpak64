@@ -30,6 +30,10 @@ void net_race_autodrive(void);
  *  the master display list is open. No-op unless NET_DEMO_AUTODRIVE. */
 void net_autodrive_overlay(void);
 
+/** Spectator status line ("SPECTATING <name> <view>") during a replay. Call
+ *  with the other overlays after cam_pop. No-op unless spectating. */
+void net_spectate_overlay(void);
+
 /** Returns true exactly once, when the NetPak64 device is connected and it is
  *  time to auto-start the networked race (see net_race.c). The caller then
  *  performs the menu-bypass launch. Always false with no device. */
