@@ -6,6 +6,16 @@ commit, build flags, and md5. Rollback ROMs live in
 them, named `<version>_<md5>.tape` — a tape verifies ONLY the exact ROM that
 recorded it (sim is ROM-layout-sensitive; see HARNESS_NOTES.md).
 
+## v56 — 2026-07-10 — JOINER CAMERA AT SIM RATE
+- commit: (tagged `v56`) — a1aa055fe
+- product ROM: md5 a8e69298 (`releases/v56_product_a8e69298.z64`)
+- FIXES: joiner's view wider than the host's, accentuated while skidding —
+  the local chase cam integrated per RENDER frame (kept converging through
+  lockstep micro-stalls); now gated to sim advance like the host's camera.
+- gates: loopback replay 305/305 + 3p/spectator identical; cross-machine
+  xsmoke 7141 frames identical (netpak/xsmoke.sh — the scripted required
+  gate from now on). Also covers v55's pending cross-machine check.
+
 ## v55 — 2026-07-10 — RELAY DIAGNOSTICS
 - commit: (tagged `v55`) — 628572a13
 - product ROM: md5 b99e0119 (`releases/v55_product_b99e0119.z64`)
