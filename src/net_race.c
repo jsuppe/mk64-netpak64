@@ -24,6 +24,7 @@
 #include "kart_dma.h" /* load_kart_palette (character sync) */
 #include "netpak.h"
 #include "net_race.h"
+#include "net_menu.h" /* NETPAK_ROM_VERSION — stamped into the diag beacon */
 #include "objects.h" /* gObjectList — Path A start-state pinpoint diagnostic */
 #include "camera.h"  /* Camera, camera1, func_8001EE98 — lockstep local chase-cam */
 #include "code_800029B0.h" /* D_800DC5EC (course renderer wrapper) — segment culling */
@@ -3449,12 +3450,144 @@ void net_spectate_overlay(void) {
 extern bool net_menu_online_active(void);
 extern u16 gRandomSeed16; /* gate: netcode only in online races */
 
+/* === RELAY DIAGNOSTIC UPLINK (v55) ==========================================
+ * Centralized debugging: the relay records per-room JSONL derived from the
+ * traffic it forwards (simrate, desync, block latency — relay diag.rs). Two
+ * things it cannot see arrive on this uplink, sent to the RELAY SINK node
+ * (0xFE — consumed by the relay, never forwarded to peers):
+ *   0x7A  batched debug pokes — netpak_debug_poke() mirrored here, so console
+ *         pokes are finally observable (they never leave the device
+ *         register on real hardware; ares shows them only in local logs)
+ *   0x7B  wedge beacon: gamestate + df + stall ticks + gate flags every 2s —
+ *         a stuck race entry self-reports the exact gate that is holding
+ *   0x7C  perf summary every 10s of racing: avg sim/thread5/audio us from
+ *         the profiler accumulator — real-hardware perf truth at last
+ * All sends are ch0 fire-and-forget, session-gated, a few hundred bytes/sec
+ * worst case; a pre-diag relay drops sink frames on the floor (dst matches
+ * no node), so this is safe against old infrastructure. */
+#define NP_DIAG_SINK 0xFE
+#define NP_DIAG_RING 16
+static u32 sDiagPokes[NP_DIAG_RING];
+static u8  sDiagHead;
+static u8  sDiagCount;
+static u32 sDiagTick;
+static u32 sDiagStallSample;
+
+/* Called by netpak_debug_poke (netpak_mk64.c) for every poke. High-rate
+ * per-frame tags are excluded (the hash stream 0x76/0x77 alone is 60/s);
+ * stall ticks (0x68) are sampled 1-in-32 so a long stall still shows up. */
+void net_diag_poke_mirror(u32 v) {
+    u32 tag = v >> 24;
+    if (tag == 0x76 || tag == 0x77 || (tag >= 0xE8 && tag <= 0xEB) ||
+        tag == 0xF6 || tag == 0xDD) {
+        return;
+    }
+    if (tag == 0x68) {
+        sDiagStallSample++;
+        if ((sDiagStallSample & 31) != 0) {
+            return;
+        }
+    }
+    if (sDiagCount == NP_DIAG_RING) { /* full: drop oldest */
+        sDiagHead = (u8) ((sDiagHead + 1) % NP_DIAG_RING);
+        sDiagCount--;
+    }
+    sDiagPokes[(sDiagHead + sDiagCount) % NP_DIAG_RING] = v;
+    sDiagCount++;
+}
+
+static void net_diag_tick(void) {
+    u8 buf[4 + NP_DIAG_RING * 4];
+    if (!(netpak_status() & NETPAK_STATUS_SESSION)) {
+        sDiagCount = 0; /* roomless: nowhere to file events — don't hoard */
+        return;
+    }
+    sDiagTick++;
+
+    /* pokes: up to a ring-full every second */
+    if ((sDiagTick % 30) == 0 && sDiagCount != 0) {
+        s32 i;
+        buf[0] = 0x7A;
+        buf[1] = sDiagCount;
+        buf[2] = 0;
+        buf[3] = 0;
+        for (i = 0; i < (s32) sDiagCount; i++) {
+            u32 v = sDiagPokes[(sDiagHead + (u32) i) % NP_DIAG_RING];
+            buf[4 + i * 4] = (u8) (v >> 24);
+            buf[5 + i * 4] = (u8) (v >> 16);
+            buf[6 + i * 4] = (u8) (v >> 8);
+            buf[7 + i * 4] = (u8) v;
+        }
+        netpak_send(NP_DIAG_SINK, 0, buf, (u16) (4 + (u16) sDiagCount * 4));
+        sDiagCount = 0;
+        sDiagHead = 0;
+    }
+
+    /* wedge beacon every ~2s: enough to reconstruct a stuck race entry */
+    if ((sDiagTick % 60) == 0) {
+        u32 df = sLsFrame;
+        u32 st = sLsStallTicks;
+        u32 aux = (sBlkSeqMask & 0xFFu) | ((u32) net_menu_player_count() << 8) |
+                  ((sLsSpecMask & 0xFFu) << 16);
+        buf[0] = 0x7B;
+        buf[1] = (u8) NETPAK_ROM_VERSION;
+        buf[2] = (u8) gGamestate;
+        buf[3] = (u8) ((sBlkApplied ? 1 : 0) | (sLsEngaged ? 2 : 0) |
+                       (sLsStall ? 4 : 0) | (sLsLocalSpec ? 8 : 0));
+        buf[4] = (u8) (df >> 24); buf[5] = (u8) (df >> 16);
+        buf[6] = (u8) (df >> 8);  buf[7] = (u8) df;
+        buf[8] = (u8) (st >> 24); buf[9] = (u8) (st >> 16);
+        buf[10] = (u8) (st >> 8); buf[11] = (u8) st;
+        buf[12] = (u8) (aux >> 24); buf[13] = (u8) (aux >> 16);
+        buf[14] = (u8) (aux >> 8);  buf[15] = (u8) aux;
+        netpak_send(NP_DIAG_SINK, 0, buf, 16);
+    }
+
+#if NET_DIAG
+    /* perf summary every ~10s of racing: profiler accumulator deltas ->
+     * average microseconds (us = cycles * 64 / 3000) */
+    if ((sDiagTick % 300) == 0 && gGamestate == RACING) {
+        static u32 sPfFrames;
+        static u64 sPfSim, sPfT5, sPfAud;
+        u32 frames = *(volatile u32*) 0x8052F800;
+        u64 sim = *(volatile u64*) 0x8052F808;
+        u64 t5 = *(volatile u64*) 0x8052F828;
+        u64 aud = *(volatile u64*) 0x8052F838;
+        u32 df2 = frames - sPfFrames;
+        if (df2 != 0 && frames >= sPfFrames) {
+            u32 simUs = (u32) (((sim - sPfSim) / df2) * 64u / 3000u);
+            u32 t5Us = (u32) (((t5 - sPfT5) / df2) * 64u / 3000u);
+            u32 audUs = (u32) (((aud - sPfAud) / df2) * 64u / 3000u);
+            buf[0] = 0x7C;
+            buf[1] = 0;
+            buf[2] = (u8) (df2 >> 8);
+            buf[3] = (u8) df2;
+            buf[4] = (u8) (simUs >> 24); buf[5] = (u8) (simUs >> 16);
+            buf[6] = (u8) (simUs >> 8);  buf[7] = (u8) simUs;
+            buf[8] = (u8) (t5Us >> 24);  buf[9] = (u8) (t5Us >> 16);
+            buf[10] = (u8) (t5Us >> 8);  buf[11] = (u8) t5Us;
+            buf[12] = (u8) (audUs >> 24); buf[13] = (u8) (audUs >> 16);
+            buf[14] = (u8) (audUs >> 8);  buf[15] = (u8) audUs;
+            netpak_send(NP_DIAG_SINK, 0, buf, 16);
+        }
+        sPfFrames = frames;
+        sPfSim = sim;
+        sPfT5 = t5;
+        sPfAud = aud;
+    }
+#endif
+}
+
 void net_race_frame(void) {
     u32 epoch;
 
     if (!netpak_present()) {
         return;
     }
+
+    /* diag uplink runs whenever we are in a ROOM — lobby included (the
+     * online-active gate below only covers race time) */
+    net_diag_tick();
 
     /* Offline races (GP / VS / Time Trials) run with pure local input — the
      * in-race netcode only ever engages for an ONLINE race. */

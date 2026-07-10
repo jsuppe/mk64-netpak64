@@ -430,6 +430,8 @@ bool netpak_present(void) {
 }
 
 void netpak_debug_poke(u32 v) {
+    extern void net_diag_poke_mirror(u32); /* relay uplink ring (net_race.c) */
+    net_diag_poke_mirror(v);
     np_write(NP_REG_ARG0, v); /* ARG0 (0x0020): a real register the trace logs */
 }
 
