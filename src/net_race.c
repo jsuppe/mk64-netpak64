@@ -1401,6 +1401,14 @@ static u8      sCamSimArr[0x4E0];         /* sim's copy of the same region, save
     when the host banks", turning angles more extreme). Same isolation pattern
     as sCamLoc1/sCamLocD300; sim's copy still restored by cam_pop. */
 static bool    sCamLocArrInit;
+static u32     sCamFollowFrame = 0xFFFFFFFF; /* sLsFrame at the last local
+    follow step — the follow must integrate at SIM rate. It used to run every
+    RENDER iteration: on a joiner the render keeps going through the
+    lockstep's micro-stalls, so the camera kept converging while the world
+    was frozen — visibly WIDER than the host's view (the chase cam normally
+    trails its zoom target; extra steps let it catch up), accentuated while
+    skidding (skid pushes a wider target). The host's camera lives in the
+    sim path and only ever steps with the sim; now the joiner's does too. */
 
 /* === SPECTATOR (task #spectator, phase 1: replay viewer) ===================
  * While a tape replay runs, the local pad drives nothing (all karts come from
@@ -1480,6 +1488,7 @@ static void net_lockstep_reset(void) {
      * own init run on top. */
 
     sCamLocInit = false; /* fresh local-camera context each race */
+    sCamFollowFrame = 0xFFFFFFFF; /* first render of the race runs the follow */
     gNetProbeAnchors[0] = &sCamLoc1;
     gNetProbeAnchors[1] = &sCamSim1;
     gNetProbeAnchors[2] = sCamLocArr;
@@ -3115,6 +3124,14 @@ void net_lockstep_cam_push(void) {
      * height/zoom arrays), which 1P mode only maintains for screen 0 — passing ls
      * left those zeroed, putting the camera on the ground at the kart's tail. The
      * kart to follow is carried by the Player* + camera->playerId, not the index. */
+    if (sLsFrame == sCamFollowFrame) {
+        /* sim did not advance since the last follow (stall/pause render):
+         * hold the camera exactly like the host's sim camera holds. The
+         * state swap above still ran, so rendering uses the local context. */
+        D_800DC5EC->player = &gPlayers[view];
+        return;
+    }
+    sCamFollowFrame = sLsFrame;
     if (!spec || gNetSpecView == SPEC_VIEW_CHASE) {
         if (spec && D_80152300[0] == 3) {
             D_80152300[0] = 1; /* leaving cinematic: back to chase */
