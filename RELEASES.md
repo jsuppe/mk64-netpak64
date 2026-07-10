@@ -6,6 +6,23 @@ commit, build flags, and md5. Rollback ROMs live in
 them, named `<version>_<md5>.tape` — a tape verifies ONLY the exact ROM that
 recorded it (sim is ROM-layout-sensitive; see HARNESS_NOTES.md).
 
+## v54 — 2026-07-10 — RELIABLE RACE-ENTRY (start-freeze fix)
+- commit: (tagged `v54`) — 1f3cd35f8
+- product ROM: md5 222067bb (`releases/v54_product_222067bb.z64`)
+- FIXES: "all online games freeze at race start" (v52/v53 console+balthazar,
+  3/3 repro): the host's CPU-block was streamed once over raw UDP; a lost or
+  too-early chunk wedged the joiner at the gate forever (black screen), host
+  dropped them and raced CPUs. Latent since v40-era; exposed by real-network
+  loss + uneven course-load times (all earlier batteries were loopback).
+- new protocol msg LSBLKACK (0x41): joiner ACKs block completion; host
+  re-sweeps chunks to un-ACKed peers until done or ~30s. Chunk apply now
+  seq-bitmask deduped.
+- gates: cross-machine melchior<->balthazar race — joiner engaged, 6529
+  frames compared ALL IDENTICAL; loopback replay 139/139 + 2p identical.
+- NOTE: cross-machine autopilot smoke test (spec: xhost.sh pattern in
+  scratchpad) should join every future release battery — loopback alone
+  proved blind to this whole failure class.
+
 ## v53 — 2026-07-10 — SPECTATOR MODE
 - commit: (tagged `v53`) — 4fa079c22 + d537143fa on top of v52
 - product ROM: md5 4fc0825c (`releases/v53_product_4fc0825c.z64`)
