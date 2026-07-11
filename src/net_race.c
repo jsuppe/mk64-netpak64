@@ -777,6 +777,9 @@ void net_race_autodrive(void) {
         static u16 sAdLastPt;
         static s32 sAdXtrack;
         static s32 sAdPace;
+        static u32 sAdWrongWay;
+        static u32 sAdFwdBurst;   /* post-reverse commit-forward phase */
+        static s8  sAdEscDir;     /* escape turn direction (+/-1) */
         s16 sAdHeadErr = 0; /* captured heading error for the item block (diff
                              * is scoped inside the waypoint branch) */
 #if NET_LOCKSTEP
@@ -793,144 +796,138 @@ void net_race_autodrive(void) {
             u16 tgt;
             s16 diff;
 
-            /* PACE-CAR STRATEGY: the CPU karts lap perfectly, so prefer to
-             * chase the nearest CPU that's 8..60 path points ahead — its
-             * position is always on a drivable line, so walls and hairpins are
-             * dodged by construction. Waypoint pursuit is the fallback. */
+            /* CENTERLINE FOLLOWER (v6 — user spec: just drive down the
+             * middle and never get stuck; don't chase CPUs, don't perfect
+             * corners). A GENEROUS, non-shrinking lookahead is what kills the
+             * hairpin ping-pong: a short/shrinking lookahead aims into the
+             * apex, overshoots the heading, aims back, and oscillates. The old
+             * pace-car chase (aim at a distant CPU) aimed straight ACROSS
+             * hairpins and caused the same oscillation — removed. */
             {
-                s32 k;
-                s32 bestd = 9999;
-                s32 best = -1;
-                for (k = 0; k < 8; k++) {
-                    s32 d;
-                    if (k == me || (gPlayers[k].type & PLAYER_CPU) != PLAYER_CPU) {
-                        continue;
-                    }
-                    d = (s32) (((u32) gNearestPathPointByPlayerId[k] + (u32) cnt - (u32) near) % cnt);
-                    /* nearest CPU AHEAD on the lap. Old window [8,60] LOST the
-                     * pace car once the bot fell a lap back (every CPU then
-                     * >60 ahead) -> dropped to pure-pursuit -> pinned at a
-                     * hairpin -> fell further back: the wall-grind feedback
-                     * loop. Follow ANY CPU that's ahead (up to ~3/4 lap; beyond
-                     * that it's really behind us wrapping) so a drivable racing
-                     * line is ALWAYS available. */
-                    if (d >= 4 && d < (s32) (cnt - cnt / 4) && d < bestd) {
-                        bestd = d;
-                        best = k;
-                    }
-                }
-                sAdPace = best;
-                if ((sRaceFrames & 63) == 40) {
-                    netpak_debug_poke(0x5C000000u | ((u32) me << 16) |
-                                      ((u32) (best & 0xFF) << 8) | (u32) (bestd & 0xFF));
-                }
-            }
-            if (sAdPace >= 0) {
-                tgt = atan2s(gPlayers[sAdPace].pos[0] - p->pos[0],
-                             gPlayers[sAdPace].pos[2] - p->pos[2]);
-                diff = (s16) (tgt - p->rotation[1]);
-            } else if (nd2 > 150.0f * 150.0f) {
-                /* far off the line (escaped/knocked out): aim straight back at
-                 * the nearest waypoint until close again */
-                tgt = atan2s(ndx, ndz);
-                diff = (s16) (tgt - p->rotation[1]);
-            } else {
-                /* pure pursuit with adaptive lookahead: far when aligned, near
-                 * when off-heading — a long lookahead at a hairpin aims ACROSS
-                 * it through the inner wall (both bots wedged at Luigi's first
-                 * hairpin, path index ~79, before this). */
-                s32 ahead = 4 + (s32) (p->speed * 4.0f); /* cruise ~2.0 -> ~12 */
+                s32 ahead = 7 + (s32) (p->speed * 2.0f);
                 TrackPathPoint* tp;
-                if (ahead > 14) {
-                    ahead = 14;
+                if (ahead > 12) {
+                    ahead = 12;
+                }
+                if (ahead < 6) {
+                    ahead = 6;
                 }
                 tp = &gTrackPaths[gPlayerPathIndex][((u32) near + (u32) ahead) % cnt];
                 tgt = atan2s(tp->posX - p->pos[0], tp->posZ - p->pos[2]);
                 diff = (s16) (tgt - p->rotation[1]);
-                if (diff > DEGREES(30) || diff < -DEGREES(30)) {
-                    tp = &gTrackPaths[gPlayerPathIndex][((u32) near + 3u) % cnt];
-                    tgt = atan2s(tp->posX - p->pos[0], tp->posZ - p->pos[2]);
-                    diff = (s16) (tgt - p->rotation[1]);
+            }
+            sAdPace = -1; /* retired; kept for telemetry compatibility */
+
+            /* WRONG-WAY recovery: if the kart is heading >100deg off the local
+             * path FORWARD direction, it is facing backward (spun out, or drove
+             * up a wall and turned around). Aim straight down the path forward
+             * and commit — getting pointed the right way is priority one, and
+             * this is what stops the wall-grind (a pinned kart that turns
+             * around drives back onto the line instead of grinding). */
+            {
+                TrackPathPoint* fp = &gTrackPaths[gPlayerPathIndex][((u32) near + 2u) % cnt];
+                u16 pathFwd = atan2s(fp->posX - np_->posX, fp->posZ - np_->posZ);
+                s16 headVsPath = (s16) (pathFwd - p->rotation[1]);
+                if (headVsPath > DEGREES(100) || headVsPath < -DEGREES(100)) {
+                    diff = headVsPath;
+                    sAdWrongWay = 30;
                 }
             }
+            if (sAdWrongWay != 0) {
+                sAdWrongWay--;
+            }
 
-            /* cross-track correction (Stanley-lite): add steering proportional
-             * to the signed lateral offset from the path, so the kart is pulled
-             * back to the centerline BEFORE it wall-hugs. Sign from the cross
-             * product of the local path direction and the offset vector. */
+            /* cross-track correction: pull back to the centerline before the
+             * kart wall-hugs. Sign from the cross product of local path
+             * direction and the kart's offset from the nearest point. */
             {
                 TrackPathPoint* np2 = &gTrackPaths[gPlayerPathIndex][((u32) near + 1u) % cnt];
                 f32 dirx = np2->posX - np_->posX;
                 f32 dirz = np2->posZ - np_->posZ;
-                f32 offx = -ndx; /* kart - nearest point */
-                f32 offz = -ndz;
-                f32 cross = dirx * offz - dirz * offx;
-                s32 pull = (s32) (cross * 0.15f);
-                if (pull > 30) {
-                    pull = 30;
+                f32 cross = dirx * (-ndz) - dirz * (-ndx);
+                s32 pull = (s32) (cross * 0.22f); /* harder pull to the line */
+                if (pull > 40) {
+                    pull = 40;
                 }
-                if (pull < -30) {
-                    pull = -30;
+                if (pull < -40) {
+                    pull = -40;
                 }
-                sAdXtrack = (sAdPace >= 0) ? 0 : pull;
+                sAdXtrack = pull;
             }
 
-            /* throttle: full when aligned, eased in corners so the kart can
-             * rotate. When pacing a CPU the target is drivable by construction
-             * and close-follow makes diff swing, so commit harder to the gas. */
-            if (sAdPace >= 0) {
-                if (diff > DEGREES(80) || diff < -DEGREES(80)) {
-                    wantA = (sRaceFrames & 3) != 0;
+            /* CURVE-AWARE throttle (the real fix — visual trail showed the bot
+             * plowing WIDE on a left bend into the outer wall and wedging, not
+             * a hairpin). Lift the gas when a curve is ahead OR the heading
+             * error is building, so the kart actually tracks the line instead
+             * of understeering into the wall. Corners need not be fast (spec) —
+             * only clean enough not to wedge. */
+            {
+                TrackPathPoint* fp2 = &gTrackPaths[gPlayerPathIndex][((u32) near + 10u) % cnt];
+                u16 farHead = atan2s(fp2->posX - p->pos[0], fp2->posZ - p->pos[2]);
+                s16 curve = (s16) (farHead - p->rotation[1]);
+                s16 ad = (diff < 0) ? (s16) -diff : diff;
+                s16 ac = (curve < 0) ? (s16) -curve : curve;
+                s16 worst = (ad > ac) ? ad : ac;
+                if (worst > DEGREES(45)) {
+                    wantA = (sRaceFrames & 1);        /* hard bend: half gas */
+                } else if (worst > DEGREES(22) && p->speed > 2.2f) {
+                    wantA = (sRaceFrames & 3) != 0;   /* moderate bend: ~75% */
                 }
-            } else {
-                if (diff > DEGREES(35) || diff < -DEGREES(35)) {
-                    wantA = (sRaceFrames & 3) != 0;
-                }
-                if (diff > DEGREES(80) || diff < -DEGREES(80)) {
-                    wantA = (sRaceFrames & 1);
-                }
-            }
-            /* hairpin overspeed: dab the brake while badly off-heading at pace */
-            if (sAdPace < 0 && (diff > DEGREES(55) || diff < -DEGREES(55)) && p->speed > 1.5f && (sRaceFrames & 7) < 2) {
-                wantA = 0;
-                wantB = 1;
             }
 
             sAdHeadErr = diff; /* for item-usage straight/corner decision */
-            steer = diff / 60 - sAdXtrack; /* pull sign VERIFIED by A/B: flipping it dropped lap coverage 9->6 */
-            if (steer > 75) {
-                steer = 75;
+            /* moderate gain + long lookahead = smooth tracking, no ping-pong */
+            steer = diff / 90 - sAdXtrack;
+            if (steer > 80) {
+                steer = 80;
             }
-            if (steer < -75) {
-                steer = -75;
-            }
-            if (steer > 0 && steer < 14) {
-                steer = (diff > DEGREES(1)) ? 14 : 0;
-            }
-            if (steer < 0 && steer > -14) {
-                steer = (diff < -DEGREES(1)) ? -14 : 0;
+            if (steer < -80) {
+                steer = -80;
             }
 
-            /* last-resort unpin. NOTE: speed is NOT a usable pin signal — a
-             * kart grinding a wall at full throttle still reads cruise speed.
-             * The reliable signal is the path index not advancing. One short
-             * STRAIGHT reverse (arcs clip through walls), long cooldown. */
+            /* UNPIN (v6): the reliable stuck signal is the path index not
+             * advancing (speed lies — a kart grinding a wall at full throttle
+             * still reads cruise speed). v5 reversed STRAIGHT, but from a
+             * perpendicular wall-wedge that just backs off and drives right
+             * back in at the same wrong angle (the path-147 hairpin pin).
+             * Now: reverse WHILE steering toward the path-forward heading, so
+             * backing up also ROTATES the kart off the wall; when it resumes
+             * forward it is pointed down the track. Shorter cooldown so a
+             * re-wedge retries promptly. */
             if (sAdRevCooldown != 0) {
                 sAdRevCooldown--;
             }
             if (near != sAdLastPt || sRaceFrames < 300) {
                 sAdLastPt = near;
                 sAdStuck = 0;
-            } else if (++sAdStuck > 150 && sAdRevLeft == 0 && sAdRevCooldown == 0) {
-                sAdRevLeft = 45;
-                sAdRevCooldown = 450;
+            } else if (++sAdStuck > 70 && sAdRevLeft == 0 && sAdFwdBurst == 0 &&
+                       sAdRevCooldown == 0) {
+                /* commit to a decisive ESCAPE: long HARD-LOCK reverse to swing
+                 * the nose fully off the wall, then a forward burst in the same
+                 * rotational sense to drive AWAY before normal following
+                 * resumes (v6's proportional reverse just re-wedged: the kart
+                 * backed off an inch and drove straight back into the wall, 31%
+                 * of the race stuck in that micro-cycle at one hairpin). */
+                sAdRevLeft = 55;
+                sAdEscDir = (diff < 0) ? (s8) 1 : (s8) -1; /* toward path-fwd */
                 sAdStuck = 0;
             }
             if (sAdRevLeft != 0) {
                 sAdRevLeft--;
                 wantA = 0;
                 wantB = 1;
-                steer = 0; /* straight back — arcs are how v4 clipped through walls */
+                steer = (s32) sAdEscDir * 80; /* HARD lock — swing the nose */
+                if (sAdRevLeft == 0) {
+                    sAdFwdBurst = 28; /* then commit forward, same turn sense */
+                }
+            } else if (sAdFwdBurst != 0) {
+                sAdFwdBurst--;
+                wantA = 1;
+                wantB = 0;
+                steer = (s32) -sAdEscDir * 55; /* continue the turn, driving off */
+                if (sAdFwdBurst == 0) {
+                    sAdRevCooldown = 90; /* brief settle before re-arming */
+                }
             }
         }
 
