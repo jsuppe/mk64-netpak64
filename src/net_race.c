@@ -1260,6 +1260,8 @@ static s32     sLsMyPlayer = -1;
 static bool sLsLocalSpec;          /* latched at reset: this console WATCHES */
 static u32  sLsSpecMask;           /* latched at reset: spectator slot bits */
 static u32     sLsFrame;
+u32 gNetTestPauseAt;  /* dismat pause injector: sim frame to pause at (0=off) */
+u32 gNetTestPauseLen; /* ticks to hold the pause (0 -> 300) */
 static u16     sLsSimSeed;   /* Path B: private sim RNG state (render can't drift it) */
 static bool    sLsRngActive; /* true while an online lockstep race is running */
 static bool    sLsStall;     /* stall gate: true when a needed input is missing this frame */
@@ -1798,30 +1800,34 @@ void net_lockstep_tick(void) {
      * OFF by default since the tape-replay work: pause DURATION is wall-clock
      * (pause-menu render frames accumulate state), so an injected pause makes
      * every test recording irreproducible. Flip on to re-test pause sync. */
-#define NET_PAUSE_INJECT_TEST 0
-#if NET_PAUSE_INJECT_TEST
+/* DISRUPTION-MATRIX pause injector (test builds; dismat.sh): GDB-pokeable —
+ * see gNetTestPauseAt/Len (file scope, netbss, in the map). */
+#if NET_MENU_TEST
     {
-        static u32 sPjTick, sPjPaused;
-        sPjTick++;
-        if (me == 1 && sPjTick == 900) { /* the JOINER pauses: exercises the
-                 pause-owner clamp (owner index 2 reads a frozen ring slot) */
+        static u32 sPjHeld;
+        if (gNetTestPauseAt != 0 && gIsGamePaused == 0 && sPjHeld == 0 &&
+            sLsFrame >= gNetTestPauseAt) {
             gControllers[0].button |= START_BUTTON; /* captured + broadcast below */
-            netpak_debug_poke(0xA5000900u);
+            gControllers[0].buttonPressed |= START_BUTTON;
+            netpak_debug_poke(0xA5000000u | (sLsFrame & 0xFFFFFFu)); /* pause pressed */
         }
-        if (gIsGamePaused != 0) {
-            if (sPjPaused++ == 0) {
-                netpak_debug_poke(0xA6000000u | (sLsFrame & 0xFFFFFFu));
+        if (gIsGamePaused != 0 && gNetTestPauseAt != 0) {
+            u32 len = (gNetTestPauseLen != 0) ? gNetTestPauseLen : 300;
+            sPjHeld++;
+            if (sPjHeld == 1) {
+                netpak_debug_poke(0xA6000000u | (sLsFrame & 0xFFFFFFu)); /* paused */
             }
-            if (me == 1 && sPjPaused > 90 && (sPjPaused % 20) == 0) {
+            if (sPjHeld > len && (sPjHeld % 20) == 0) {
                 gControllers[0].buttonPressed |= START_BUTTON; /* menu resume —
                     PAUSER ONLY: the peer must resume via LSRESUME broadcast */
             }
-        } else if (sPjPaused != 0) {
-            netpak_debug_poke(0xA7000000u | (sLsFrame & 0xFFFFFFu));
-            sPjPaused = 0;
+        } else if (sPjHeld != 0 && gIsGamePaused == 0) {
+            netpak_debug_poke(0xA7000000u | (sLsFrame & 0xFFFFFFu)); /* resumed */
+            sPjHeld = 0;
+            gNetTestPauseAt = 0; /* one-shot */
         }
     }
-#endif /* NET_PAUSE_INJECT_TEST */
+#endif /* NET_MENU_TEST (pause injector) */
 #endif
 
     np = net_menu_player_count();
