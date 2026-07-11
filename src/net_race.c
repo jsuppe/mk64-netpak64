@@ -780,6 +780,8 @@ void net_race_autodrive(void) {
         static u32 sAdWrongWay;
         static u32 sAdFwdBurst;   /* post-reverse commit-forward phase */
         static s8  sAdEscDir;     /* escape turn direction (+/-1) */
+        static u32 sAdSlowFrames; /* consecutive near-stopped frames (wedge) */
+        s32 sAdOff = 0;           /* perpendicular offset from the line (units) */
         s16 sAdHeadErr = 0; /* captured heading error for the item block (diff
                              * is scoped inside the waypoint branch) */
 #if NET_LOCKSTEP
@@ -845,14 +847,36 @@ void net_race_autodrive(void) {
                 f32 dirx = np2->posX - np_->posX;
                 f32 dirz = np2->posZ - np_->posZ;
                 f32 cross = dirx * (-ndz) - dirz * (-ndx);
-                s32 pull = (s32) (cross * 0.22f); /* harder pull to the line */
-                if (pull > 40) {
-                    pull = 40;
+                s32 pull = (s32) (cross * 0.35f); /* harder pull to the line */
+                if (pull > 65) {
+                    pull = 65;
                 }
-                if (pull < -40) {
-                    pull = -40;
+                if (pull < -65) {
+                    pull = -65;
                 }
                 sAdXtrack = pull;
+            }
+            /* OFF-LINE RECOVERY (the real root cause, found by trail analysis):
+             * on a LONG GENTLE curve the bot stayed full-throttle and slowly
+             * understeered out to the outer wall (offset 10 -> 50), then rode
+             * the wall and wedged. The bend is too gentle to trip the corner
+             * brake, and cross-track steering can't overcome understeer at full
+             * speed. So: when meaningfully off the line, SLOW DOWN — at lower
+             * speed the steering bites and the kart returns to center. sAdOff
+             * (the perpendicular offset) drives both throttle cut and a steer
+             * boost toward the line. */
+            /* offset ~= sqrt(nd2) (distance to nearest waypoint); good enough
+             * as an off-line magnitude without a real sqrt: compare squared. */
+            if (nd2 > 35.0f * 35.0f) {
+                sAdOff = 100; /* off the line */
+            }
+            if (sAdOff > 35) {
+                if (p->speed > 2.2f) {
+                    wantA = 0;
+                    wantB = 1;                 /* too far out: brake to recover */
+                } else if (p->speed > 1.4f) {
+                    wantA = (sRaceFrames & 1);
+                }
             }
 
             /* CURVE-AWARE throttle (the real fix — visual trail showed the bot
@@ -862,16 +886,45 @@ void net_race_autodrive(void) {
              * of understeering into the wall. Corners need not be fast (spec) —
              * only clean enough not to wedge. */
             {
-                TrackPathPoint* fp2 = &gTrackPaths[gPlayerPathIndex][((u32) near + 10u) % cnt];
-                u16 farHead = atan2s(fp2->posX - p->pos[0], fp2->posZ - p->pos[2]);
-                s16 curve = (s16) (farHead - p->rotation[1]);
-                s16 ad = (diff < 0) ? (s16) -diff : diff;
-                s16 ac = (curve < 0) ? (s16) -curve : curve;
-                s16 worst = (ad > ac) ? ad : ac;
-                if (worst > DEGREES(45)) {
-                    wantA = (sRaceFrames & 1);        /* hard bend: half gas */
-                } else if (worst > DEGREES(22) && p->speed > 2.2f) {
-                    wantA = (sRaceFrames & 3) != 0;   /* moderate bend: ~75% */
+                /* EARLY BRAKING (robust lap completion, not speed). The bot
+                 * re-wedged at a 90deg corner because it arrived too FAST to
+                 * rotate through. Scan FAR ahead (a corner takes ~16 waypoints
+                 * to develop here) and start scrubbing speed well before the
+                 * apex, so the kart enters the corner slow enough to make it
+                 * with full steer. Measure the SHARPEST bend anywhere in the
+                 * scan window, not just at one lookahead point. */
+                s32 j;
+                s16 sharp = 0;
+                for (j = 4; j <= 18; j += 2) {
+                    TrackPathPoint* fj = &gTrackPaths[gPlayerPathIndex][((u32) near + (u32) j) % cnt];
+                    s16 h = (s16) (atan2s(fj->posX - p->pos[0], fj->posZ - p->pos[2]) - p->rotation[1]);
+                    s16 ah = (h < 0) ? (s16) -h : h;
+                    if (ah > sharp) {
+                        sharp = ah;
+                    }
+                }
+                {
+                    s16 ad = (diff < 0) ? (s16) -diff : diff;
+                    s16 worst = (ad > sharp) ? ad : sharp;
+                    /* target entry speed falls as the bend sharpens; brake
+                     * (B) whenever we're above it, so we ARRIVE slow. */
+                    f32 cap = 6.0f;
+                    if (worst > DEGREES(60)) {
+                        cap = 1.3f;
+                    } else if (worst > DEGREES(40)) {
+                        cap = 2.2f;
+                    } else if (worst > DEGREES(25)) {
+                        cap = 3.3f;
+                    } else if (worst > DEGREES(14)) {
+                        cap = 4.5f;
+                    }
+                    if (p->speed > cap + 0.6f) {
+                        wantA = 0;
+                        wantB = 1;              /* over cap: brake */
+                    } else if (p->speed > cap) {
+                        wantA = (sRaceFrames & 1); /* near cap: coast */
+                    }
+                    /* else full throttle up to the cap */
                 }
             }
 
@@ -897,11 +950,25 @@ void net_race_autodrive(void) {
             if (sAdRevCooldown != 0) {
                 sAdRevCooldown--;
             }
+            /* SPEED-based wedge detect (the real fix): path-index stuck
+             * detection FAILED because a nose-in wedge jitters the nearest
+             * waypoint 147<->148, resetting sAdStuck every few frames so the
+             * escape never fired. A kart actually stopped reads speed ~0.2
+             * (distinct from cruise ~5.5), so sustained low speed is the
+             * reliable wedge signal. */
+            if (p->speed < 1.0f && sRaceFrames > 300) {
+                sAdSlowFrames++;
+            } else {
+                sAdSlowFrames = 0;
+            }
             if (near != sAdLastPt || sRaceFrames < 300) {
                 sAdLastPt = near;
                 sAdStuck = 0;
-            } else if (++sAdStuck > 70 && sAdRevLeft == 0 && sAdFwdBurst == 0 &&
-                       sAdRevCooldown == 0) {
+            } else {
+                sAdStuck++;
+            }
+            if ((sAdStuck > 70 || sAdSlowFrames > 35) && sAdRevLeft == 0 &&
+                sAdFwdBurst == 0 && sAdRevCooldown == 0) {
                 /* commit to a decisive ESCAPE: long HARD-LOCK reverse to swing
                  * the nose fully off the wall, then a forward burst in the same
                  * rotational sense to drive AWAY before normal following
@@ -911,6 +978,7 @@ void net_race_autodrive(void) {
                 sAdRevLeft = 55;
                 sAdEscDir = (diff < 0) ? (s8) 1 : (s8) -1; /* toward path-fwd */
                 sAdStuck = 0;
+                sAdSlowFrames = 0;
             }
             if (sAdRevLeft != 0) {
                 sAdRevLeft--;
