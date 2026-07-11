@@ -840,7 +840,7 @@ void net_menu_reset(void) {
     sCourseSel = 0;
     sGameCount = 0;
     sGameSel = 0;
-    sHostPublic = 0;
+    sHostPublic = 1; /* PUBLIC default (see OM_HOST_CC note) */
     sOnlineArmed = false;
     sOnlineActive = false;
     for (i = 0; i < CODE_LEN; i++) {
@@ -1053,7 +1053,11 @@ void net_menu_update(struct Controller* controller) {
                 sState = OM_MAIN;
                 play_sound2(SOUND_MENU_GO_BACK);
             } else if (btn & A_BUTTON) { /* class locked -> visibility pick */
-                sHostPublic = 0; /* private is always the default */
+                sHostPublic = 1; /* PUBLIC default: hosts on a personal relay
+                    expect FIND GAME to see their room — the private default
+                    read as "FIND GAME is broken" (2026-07-10, relay log:
+                    rooms created private, LIST empty, joiner refreshing at
+                    NO PUBLIC GAMES). PRIVATE is one D-pad press away. */
                 sState = OM_HOST_VIS;
                 play_sound2(SOUND_MENU_SELECT);
             }
