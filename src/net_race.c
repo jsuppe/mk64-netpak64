@@ -777,6 +777,8 @@ void net_race_autodrive(void) {
         static u16 sAdLastPt;
         static s32 sAdXtrack;
         static s32 sAdPace;
+        s16 sAdHeadErr = 0; /* captured heading error for the item block (diff
+                             * is scoped inside the waypoint branch) */
 #if NET_LOCKSTEP
         me = net_lockstep_local_slot();
 #endif
@@ -801,16 +803,27 @@ void net_race_autodrive(void) {
                 s32 best = -1;
                 for (k = 0; k < 8; k++) {
                     s32 d;
-                    if ((gPlayers[k].type & PLAYER_CPU) != PLAYER_CPU) {
+                    if (k == me || (gPlayers[k].type & PLAYER_CPU) != PLAYER_CPU) {
                         continue;
                     }
                     d = (s32) (((u32) gNearestPathPointByPlayerId[k] + (u32) cnt - (u32) near) % cnt);
-                    if (d >= 8 && d <= 60 && d < bestd) {
+                    /* nearest CPU AHEAD on the lap. Old window [8,60] LOST the
+                     * pace car once the bot fell a lap back (every CPU then
+                     * >60 ahead) -> dropped to pure-pursuit -> pinned at a
+                     * hairpin -> fell further back: the wall-grind feedback
+                     * loop. Follow ANY CPU that's ahead (up to ~3/4 lap; beyond
+                     * that it's really behind us wrapping) so a drivable racing
+                     * line is ALWAYS available. */
+                    if (d >= 4 && d < (s32) (cnt - cnt / 4) && d < bestd) {
                         bestd = d;
                         best = k;
                     }
                 }
                 sAdPace = best;
+                if ((sRaceFrames & 63) == 40) {
+                    netpak_debug_poke(0x5C000000u | ((u32) me << 16) |
+                                      ((u32) (best & 0xFF) << 8) | (u32) (bestd & 0xFF));
+                }
             }
             if (sAdPace >= 0) {
                 tgt = atan2s(gPlayers[sAdPace].pos[0] - p->pos[0],
@@ -883,6 +896,7 @@ void net_race_autodrive(void) {
                 wantB = 1;
             }
 
+            sAdHeadErr = diff; /* for item-usage straight/corner decision */
             steer = diff / 60 - sAdXtrack; /* pull sign VERIFIED by A/B: flipping it dropped lap coverage 9->6 */
             if (steer > 75) {
                 steer = 75;
@@ -917,6 +931,53 @@ void net_race_autodrive(void) {
                 wantA = 0;
                 wantB = 1;
                 steer = 0; /* straight back — arcs are how v4 clipped through walls */
+            }
+        }
+
+        /* ITEM USAGE (user request): a wall-grinding bot that never fires an
+         * item makes the whole race unrepresentative — no shells, no spinouts,
+         * no boosts, no collisions with the effects real players cause. Fire Z
+         * when holding: mushrooms/boosts only on a straight (speed where it
+         * helps); everything else offensively a beat after the roulette
+         * settles. currentItemCopy is the SYNCED item field, so this is a pure
+         * function of sim state -> deterministic across consoles. */
+        {
+            extern s16 gGPCurrentRaceCharacterIdByRank[8];
+            static s16 sAdItemPrev[NET_MAX_SLOTS];
+            static u32 sAdItemHold[NET_MAX_SLOTS];
+            s16 item = p->currentItemCopy;
+            s32 useZ = 0;
+            if (item != ITEM_NONE) {
+                if (item != sAdItemPrev[me]) {
+                    sAdItemHold[me] = 0; /* just acquired: let roulette settle */
+                }
+                sAdItemHold[me]++;
+                if (item == ITEM_MUSHROOM || item == ITEM_TRIPLE_MUSHROOM ||
+                    item == ITEM_SUPER_MUSHROOM) {
+                    if (sAdItemHold[me] > 10 && sAdHeadErr < DEGREES(22) && sAdHeadErr > -DEGREES(22)) {
+                        useZ = 1;
+                    }
+                } else if (sAdItemHold[me] > 26) {
+                    useZ = 1; /* shells/star/lightning/banana: deploy */
+                }
+            }
+            sAdItemPrev[me] = item;
+            if (useZ) {
+                gControllers[0].button |= Z_TRIG;
+                gControllers[0].buttonPressed |= Z_TRIG;
+            }
+            /* rank telemetry: find my characterId in the by-rank standings so
+             * the harness can VERIFY bots finish mid-pack, not 7th/8th. */
+            if ((sRaceFrames & 63) == 20) {
+                s32 r, rank = 8;
+                for (r = 0; r < 8; r++) {
+                    if (gGPCurrentRaceCharacterIdByRank[r] == p->characterId) {
+                        rank = r + 1;
+                        break;
+                    }
+                }
+                netpak_debug_poke(0x5D000000u | ((u32) me << 16) |
+                                  ((u32) rank << 8) | (u32) (item & 0xFF));
             }
         }
 
@@ -1260,6 +1321,7 @@ static s32     sLsMyPlayer = -1;
 static bool sLsLocalSpec;          /* latched at reset: this console WATCHES */
 static u32  sLsSpecMask;           /* latched at reset: spectator slot bits */
 static u32     sLsFrame;
+u32 gNetTestCourse;   /* dismat course override: force this course id (0=off) */
 u32 gNetTestPauseAt;  /* dismat pause injector: sim frame to pause at (0=off) */
 u32 gNetTestPauseLen; /* ticks to hold the pause (0 -> 300) */
 static u16     sLsSimSeed;   /* Path B: private sim RNG state (render can't drift it) */
