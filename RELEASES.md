@@ -6,6 +6,24 @@ commit, build flags, and md5. Rollback ROMs live in
 them, named `<version>_<md5>.tape` — a tape verifies ONLY the exact ROM that
 recorded it (sim is ROM-layout-sensitive; see HARNESS_NOTES.md).
 
+## v57 — 2026-07-12 — ONLINE PAUSE OVERLAY (+ PUBLIC default)
+- commit: (tagged `v57`) — e8449b960
+- product ROM: md5 19d42331 (`releases/v57_product_19d42331.z64`)
+- FIXES: online pause now shows a LOCAL overlay menu (CONTINUE / QUIT RACE)
+  and the sim KEEPS RUNNING for everyone — pausing/quitting no longer
+  desyncs the room (was the top live bug). QUIT leaves the race gracefully.
+  Also: host visibility defaults to PUBLIC (FIND GAME sees hosted rooms).
+- also fixed a replay-path regression the pause commit briefly introduced
+  (capture ran during replay) — replay 100/0.
+- gates: loopback replay 100/0 + spec3 3-instance identical + pause-continue/
+  pause-quit desync=False. **xsmoke (cross-machine) DEFERRED: balthazar was
+  offline at cut. Transport/delivery layer is UNCHANGED from v56 (which passed
+  xsmoke); all v57 changes are input/menu/render/replay. Run xsmoke when
+  balthazar is up; the next real console<->balthazar game is also a live check.**
+- NOT in this cut (still open): spectator-freezes-on-leaver, Turnpike desync.
+- WIP inert scaffolding shipped (gNetTestBattle defaults 0): 1P battle spawn
+  probe for single-screen battle mode (task #20).
+
 ## v56 — 2026-07-10 — JOINER CAMERA AT SIM RATE
 - commit: (tagged `v56`) — a1aa055fe
 - product ROM: md5 a8e69298 (`releases/v56_product_a8e69298.z64`)
