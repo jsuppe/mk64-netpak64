@@ -1388,6 +1388,8 @@ static u32  sLsSpecMask;           /* latched at reset: spectator slot bits */
 static u32     sLsFrame;
 u32 gNetTestCourse;   /* dismat course override: force this course id (0=off) */
 u32 gNetTestBattle;   /* probe: force online BATTLE on Big Donut (0=off) */
+u32 gNetTestForceQuit; /* test: force the pause-overlay QUIT (autodrive holds A,
+                        * so the A-confirm edge never fires in the harness) */
 u32 gNetTestPauseAt;  /* dismat pause injector: sim frame to pause at (0=off) */
 u32 gNetTestPauseLen; /* ticks to hold the pause (0 -> 300) */
 static u16     sLsSimSeed;   /* Path B: private sim RNG state (render can't drift it) */
@@ -1573,8 +1575,10 @@ static u8  sSpecSnap;     /* snap camera heading next follow (kart switched) */
 static u8  sNetMenuOpen;   /* overlay showing */
 static u8  sNetMenuSel;    /* 0 = CONTINUE, 1 = QUIT RACE */
 static u16 sNetMenuPrevBtn;/* edge detection for the local pad */
-static u8  sNetQuitting;   /* local player chose QUIT — stop participating so
-                            * peers see input silence and drop us to a CPU */
+static u8  sNetQuitting;   /* local player chose QUIT — stop participating */
+static u8  sNetQuitFrames; /* frames left to broadcast the self-drop before we
+                            * actually leave (reliability over unreliable ch0) */
+static u32 sNetQuitL;      /* frame to drop the quitter at (last input frame) */
 
 s32 net_pause_menu_open(void) {
     return sNetMenuOpen;
@@ -1595,6 +1599,16 @@ static void net_pause_menu_tick(void) {
     if (NP_REPLAYING) {
         return;
     }
+#if NET_MENU_TEST
+    if (gNetTestForceQuit) {
+        sNetMenuOpen = 0;
+        netpak_debug_poke(0x72000000u);
+        sNetQuitL = sLsFrame;
+        sNetQuitFrames = 16;
+        gNetTestForceQuit = 0;
+        return;
+    }
+#endif
     if (!sNetMenuOpen) {
         if (press & START_BUTTON) {
             sNetMenuOpen = 1;
@@ -1608,14 +1622,16 @@ static void net_pause_menu_tick(void) {
             sNetMenuOpen = 0; /* close = CONTINUE */
         } else if (press & A_BUTTON) {
             if (sNetMenuSel == 1) {
-                extern void net_menu_online_end(void);
-                netpak_debug_poke(0x72000000u); /* QUIT from pause overlay */
-                sNetQuitting = 1;        /* belt: stop sending immediately */
-                net_menu_online_end();   /* disengage lockstep gate -> peers drop
-                                          * us to CPU; our race un-gates so the
-                                          * quit transition can complete */
-                netpak_session_leave();  /* leave the room (PEER_LEAVE) */
-                func_8028FBD4();         /* transition to the menu */
+                /* QUIT: announce a SELF-DROP so every peer converts our kart to
+                 * a CPU INSTANTLY (no 8s stall -> the host-freeze bug). We keep
+                 * running for a few frames, broadcasting the drop repeatedly
+                 * (ch0 is unreliable), THEN leave. sNetQuitFrames drives it in
+                 * net_lockstep_tick; the actual session_leave + menu transition
+                 * happen when the countdown expires. */
+                netpak_debug_poke(0x72000000u); /* QUIT pressed */
+                sNetQuitL = sLsFrame;    /* our kart is HUMAN through here, CPU after */
+                sNetQuitFrames = 16;     /* ~0.5s of redundant drop broadcasts */
+                sNetMenuOpen = 0;        /* close the overlay; the race plays on */
             }
             sNetMenuOpen = 0;
         }
@@ -1717,7 +1733,7 @@ static void net_lockstep_reset(void) {
 
     sCamLocInit = false; /* fresh local-camera context each race */
     sCamFollowFrame = 0xFFFFFFFF; /* first render of the race runs the follow */
-    sNetQuitting = 0; sNetMenuOpen = 0; /* fresh race: no pause/quit in flight */
+    sNetQuitting = 0; sNetMenuOpen = 0; sNetQuitFrames = 0; /* fresh race */
     gNetProbeAnchors[0] = &sCamLoc1;
     gNetProbeAnchors[1] = &sCamSim1;
     gNetProbeAnchors[2] = sCamLocArr;
@@ -2066,8 +2082,8 @@ void net_lockstep_tick(void) {
                         gNetTestPauseAt = 0;
                     }
                 } else if (quit && sPjTicks == hold + 6) {
-                    gControllers[0].button |= A_BUTTON;         /* confirm QUIT */
-                    gControllers[0].buttonPressed |= A_BUTTON;
+                    gNetTestForceQuit = 1;                      /* confirm QUIT
+                        (autodrive holds A -> the A-edge is masked; force it) */
                     netpak_debug_poke(0xA7000000u | (sLsFrame & 0xFFFFFFu)); /* quit */
                     sPjPhase = 2;
                     gNetTestPauseAt = 0;
@@ -2283,6 +2299,45 @@ void net_lockstep_tick(void) {
        * (replay failed 292/316 while live 3p stayed identical). */
         /* online pause overlay: consume the pad for the menu + coast the kart */
         net_pause_menu_tick();
+        /* QUIT self-drop: broadcast "drop me at sNetQuitL" for a few frames so
+         * every peer CPU-ifies our kart instantly, then leave. Fixes the
+         * host-freeze on a joiner quit (the stall-timeout drop took 8s / hung
+         * the console before firing). */
+        if (sNetQuitFrames != 0) {
+            extern void net_menu_online_end(void);
+            extern void func_8028FBD4(void);
+            LsDropMsg qd;
+            s32 qi;
+            u32 L = sNetQuitL;
+            qd.tag = LSDROP_TAG;
+            qd.player = (u8) me;
+            qd.pad = 0;
+            qd.pad2 = 0;
+            qd.lastFrame = (u16) L;
+            qd.count = 0;
+            for (qi = LS_REDUN - 1; qi >= 0; qi--) {
+                u32 fr = L - (u32) (LS_REDUN - 1 - qi);
+                LsInput* si = &sLsInput[me][fr % LS_RING];
+                if (fr <= L && si->have && si->frame == fr) {
+                    qd.in[qi].button = si->button;
+                    qd.in[qi].stickX = si->stickX;
+                    qd.in[qi].stickY = si->stickY;
+                    qd.count++;
+                } else {
+                    qd.in[qi].button = 0;
+                    qd.in[qi].stickX = 0;
+                    qd.in[qi].stickY = 0;
+                }
+            }
+            netpak_send(NETPAK_BROADCAST, 0, &qd, sizeof(qd));
+            sNetQuitting = 1; /* stop our own capture/broadcast (below) */
+            if (--sNetQuitFrames == 0) {
+                netpak_debug_poke(0x73000000u | (L & 0xFFFFFFu)); /* leaving now */
+                net_menu_online_end();   /* disengage the lockstep gate */
+                netpak_session_leave();  /* leave the room */
+                func_8028FBD4();         /* transition to the menu */
+            }
+        }
         if (!sLsStall && gIsGamePaused == 0 && !sLsLocalSpec && !sNetQuitting) {
             LsInput* s = &sLsInput[me][f % LS_RING];
             s->button = gControllers[0].button;
