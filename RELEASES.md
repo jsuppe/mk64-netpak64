@@ -6,6 +6,22 @@ commit, build flags, and md5. Rollback ROMs live in
 them, named `<version>_<md5>.tape` — a tape verifies ONLY the exact ROM that
 recorded it (sim is ROM-layout-sensitive; see HARNESS_NOTES.md).
 
+## v58 — 2026-07-12 — QUIT NO LONGER FREEZES THE HOST
+- commit: (tagged `v58`) — after 69b3ff69c
+- product ROM: md5 4d57b42f (`releases/v58_product_4d57b42f.z64`)
+- FIXES: joiner clicking QUIT RACE froze the host (user-hit, room 355EQU:
+  host stalled + hard-froze ~36s without recovering). The quitter now
+  broadcasts a SELF-DROP so every peer converts its kart to a CPU INSTANTLY
+  (was relying on the 8s stall-timeout drop, which the console froze before
+  reaching). Verified: host MAX stall_ticks=0 (was 81+/freeze), 0 desync.
+- gates: loopback replay 318/0 + spec3 3-instance identical + quit self-drop
+  (host stall 0). **xsmoke DEFERRED again (balthazar offline); the fix uses
+  the existing LSDROP mechanism — transport unchanged from v54/v57 which
+  passed xsmoke. Run when balthazar is up.**
+- still open: spectator-freezes-on-leaver, Turnpike desync, single-screen
+  battle (task #20, in progress — battle ends instantly, gPlayerBalloonCount/
+  gModeSelection at spawn is the current lead).
+
 ## v57 — 2026-07-12 — ONLINE PAUSE OVERLAY (+ PUBLIC default)
 - commit: (tagged `v57`) — e8449b960
 - product ROM: md5 19d42331 (`releases/v57_product_19d42331.z64`)
