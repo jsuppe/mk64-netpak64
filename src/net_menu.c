@@ -250,7 +250,18 @@ static void net_menu_start_race(void) {
      * engine (spawn_players.c SCREEN_MODE_1P handles only GP + TIME_TRIALS), so
      * the kart never gets placed on the grid and can't drive. Presented to the
      * player as "ONLINE" in the menus regardless of the underlying mode. */
-    gModeSelection = GRAND_PRIX;
+    {
+        /* PROBE (test builds): force online BATTLE on Big Donut when
+         * gNetTestBattle is poked, to map what breaks in 1P-screen battle. */
+        extern u32 gNetTestBattle;
+        if (gNetTestBattle) {
+            gModeSelection = BATTLE;
+            gCurrentCourseId = 0x13; /* COURSE_BIG_DONUT */
+            sOnlineCourse = 0x13;
+        } else {
+            gModeSelection = GRAND_PRIX;
+        }
+    }
     gScreenModeSelection = SCREEN_MODE_1P;
     gPlayerCount = 1;
     gPlayerCountSelection1 = 1;

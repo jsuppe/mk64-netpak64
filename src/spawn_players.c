@@ -1098,6 +1098,23 @@ void func_8003C0F0(void) {
 
         case COURSE_BIG_DONUT:
             switch (gActiveScreenMode) {
+                case SCREEN_MODE_1P:
+                    /* NetPak64 ONLINE BATTLE: vanilla never runs battle in 1P
+                     * screen mode (it's always split-screen), so this spawn
+                     * path did not exist — the missing case is why solo-screen
+                     * battle spawned no karts. Place 8 karts in a ring and use
+                     * the GP-1P spawn (the netcode drives all 8). */
+                    D_80165210[0] = 0.0f;    D_80165230[0] = 575.0f;
+                    D_80165210[1] = 400.0f;  D_80165230[1] = 400.0f;
+                    D_80165210[2] = 575.0f;  D_80165230[2] = 0.0f;
+                    D_80165210[3] = 400.0f;  D_80165230[3] = -400.0f;
+                    D_80165210[4] = 0.0f;    D_80165230[4] = -575.0f;
+                    D_80165210[5] = -400.0f; D_80165230[5] = -400.0f;
+                    D_80165210[6] = -575.0f; D_80165230[6] = 0.0f;
+                    D_80165210[7] = -400.0f; D_80165230[7] = 400.0f;
+                    spawn_players_gp_one_player(D_80165210, D_80165230, sp5A);
+                    break;
+
                 case SCREEN_MODE_2P_SPLITSCREEN_HORIZONTAL:
                 case SCREEN_MODE_2P_SPLITSCREEN_VERTICAL:
                     temp = 0xC8;

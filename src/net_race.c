@@ -1387,6 +1387,7 @@ static bool sLsLocalSpec;          /* latched at reset: this console WATCHES */
 static u32  sLsSpecMask;           /* latched at reset: spectator slot bits */
 static u32     sLsFrame;
 u32 gNetTestCourse;   /* dismat course override: force this course id (0=off) */
+u32 gNetTestBattle;   /* probe: force online BATTLE on Big Donut (0=off) */
 u32 gNetTestPauseAt;  /* dismat pause injector: sim frame to pause at (0=off) */
 u32 gNetTestPauseLen; /* ticks to hold the pause (0 -> 300) */
 static u16     sLsSimSeed;   /* Path B: private sim RNG state (render can't drift it) */
