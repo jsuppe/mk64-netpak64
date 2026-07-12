@@ -2277,15 +2277,20 @@ void net_lockstep_tick(void) {
         }
     } else
 #endif
-    /* online pause overlay: consume the pad for the menu + coast the kart */
-    net_pause_menu_tick();
-    if (!sLsStall && gIsGamePaused == 0 && !sLsLocalSpec && !sNetQuitting) {
-        LsInput* s = &sLsInput[me][f % LS_RING];
-        s->button = gControllers[0].button;
-        s->stickX = (s8) gControllers[0].rawStickX;
-        s->stickY = (s8) gControllers[0].rawStickY;
-        s->have = true;
-        s->frame = f;
+    { /* NON-replay input path. MUST stay the else-body of the replay branch:
+       * an earlier edit split net_pause_menu_tick() out of the else, so the
+       * capture ran during replay too and corrupted the tape-seeded ring
+       * (replay failed 292/316 while live 3p stayed identical). */
+        /* online pause overlay: consume the pad for the menu + coast the kart */
+        net_pause_menu_tick();
+        if (!sLsStall && gIsGamePaused == 0 && !sLsLocalSpec && !sNetQuitting) {
+            LsInput* s = &sLsInput[me][f % LS_RING];
+            s->button = gControllers[0].button;
+            s->stickX = (s8) gControllers[0].rawStickX;
+            s->stickY = (s8) gControllers[0].rawStickY;
+            s->have = true;
+            s->frame = f;
+        }
     }
 
     if (!NP_REPLAYING && !sLsLocalSpec && !sNetQuitting) {
