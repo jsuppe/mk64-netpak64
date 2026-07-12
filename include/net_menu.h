@@ -21,6 +21,10 @@ bool net_menu_local_spectator(void);
 /** Per-slot spectator bitmask for the current race (host-authoritative, GO). */
 u32 net_menu_spec_mask(void);
 
+/** Quit an online race mid-race: disengage the in-race netcode (net_race
+ *  pause-overlay QUIT). The quitter's kart is dropped to a CPU on peers. */
+void net_menu_online_end(void);
+
 /** Enter the online screen fresh (called when NETWORK_VS_MENU is set up). */
 void net_menu_reset(void);
 

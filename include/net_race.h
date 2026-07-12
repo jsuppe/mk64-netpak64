@@ -34,6 +34,10 @@ void net_autodrive_overlay(void);
  *  with the other overlays after cam_pop. No-op unless spectating. */
 void net_spectate_overlay(void);
 
+/** Online pause overlay (local menu, sim keeps running). Call with the other
+ *  race overlays after cam_pop. No-op unless the local pause menu is open. */
+void net_pause_overlay(void);
+
 /** Returns true exactly once, when the NetPak64 device is connected and it is
  *  time to auto-start the networked race (see net_race.c). The caller then
  *  performs the menu-bypass launch. Always false with no device. */

@@ -1467,7 +1467,7 @@ static u32  sBlkSendPos;
  * the arbiter itself dies immediately after sending to only SOME peers, the
  * next arbiter may compute a different L -> split. Acceptable for now. */
 #define LSDROP_TAG    0x44 /* 'D' */
-#define NET_PAUSE_SYNC 1 /* freeze the lockstep timeline while paused (the fix
+#define NET_PAUSE_SYNC 0 /* RETIRED v57: online pause is a LOCAL overlay (the fix
                           * for the pause->red-square desync); 0 = old behavior
                           * for A/B proof runs */
 static u32 sLsPauseTicks; /* pause-menu input debounce (see pause gate) */
@@ -1559,6 +1559,104 @@ u8  gNetSpecKart;         /* followed kart 0..np-1 (global: GDB-pokeable) */
 u8  gNetSpecView;         /* SPEC_VIEW_* (global: GDB-pokeable) */
 static u8  sSpecSnap;     /* snap camera heading next follow (kart switched) */
 
+/* === ONLINE PAUSE = LOCAL OVERLAY MENU (v57, user design) ===================
+ * You can't pause a multiplayer game, so in an online race START opens a
+ * LOCAL overlay menu (CONTINUE / QUIT RACE) and the simulation KEEPS RUNNING
+ * for everyone. The pausing player's kart contributes NEUTRAL input while the
+ * menu is up (it coasts), so every console still agrees on the input stream —
+ * no pause propagation, no desync (the old NET_PAUSE_SYNC freeze-the-timeline
+ * approach is what split the sims). QUIT calls the proven graceful-leave path:
+ * netpak_session_leave() departs the room and the other consoles' drop
+ * arbitration turns the abandoned kart into a CPU. gIsGamePaused is NEVER set
+ * online, so the game's own sim-stopping pause never engages. */
+static u8  sNetMenuOpen;   /* overlay showing */
+static u8  sNetMenuSel;    /* 0 = CONTINUE, 1 = QUIT RACE */
+static u16 sNetMenuPrevBtn;/* edge detection for the local pad */
+static u8  sNetQuitting;   /* local player chose QUIT — stop participating so
+                            * peers see input silence and drop us to a CPU */
+
+s32 net_pause_menu_open(void) {
+    return sNetMenuOpen;
+}
+
+/* Run BEFORE the lockstep input capture. Consumes the local pad for menu
+ * navigation and zeroes the driving input while the menu is open so the kart
+ * coasts (neutral, deterministic). Returns with gControllers[0] driving
+ * fields cleared when the menu is up. */
+static void net_pause_menu_tick(void) {
+    extern void func_8028FBD4(void);     /* quit race -> START_MENU_FROM_QUIT */
+    extern void play_sound2(u32);
+    u16 raw = gControllers[0].button;
+    u16 press = (u16) (raw & ~sNetMenuPrevBtn);
+    sNetMenuPrevBtn = raw;
+
+    /* spectators can quit too; but a replay has no live player to quit */
+    if (NP_REPLAYING) {
+        return;
+    }
+    if (!sNetMenuOpen) {
+        if (press & START_BUTTON) {
+            sNetMenuOpen = 1;
+            sNetMenuSel = 0;
+        }
+    } else {
+        if (press & (U_JPAD | D_JPAD)) {
+            sNetMenuSel ^= 1;
+        }
+        if (press & (START_BUTTON | B_BUTTON)) {
+            sNetMenuOpen = 0; /* close = CONTINUE */
+        } else if (press & A_BUTTON) {
+            if (sNetMenuSel == 1) {
+                extern void net_menu_online_end(void);
+                netpak_debug_poke(0x72000000u); /* QUIT from pause overlay */
+                sNetQuitting = 1;        /* belt: stop sending immediately */
+                net_menu_online_end();   /* disengage lockstep gate -> peers drop
+                                          * us to CPU; our race un-gates so the
+                                          * quit transition can complete */
+                netpak_session_leave();  /* leave the room (PEER_LEAVE) */
+                func_8028FBD4();         /* transition to the menu */
+            }
+            sNetMenuOpen = 0;
+        }
+    }
+    if (sNetMenuOpen) {
+        /* kart coasts: neutral input goes into the ring this frame */
+        gControllers[0].button = 0;
+        gControllers[0].buttonPressed = 0;
+        gControllers[0].rawStickX = 0;
+        gControllers[0].rawStickY = 0;
+    }
+}
+
+/* Overlay draw — called with the other race overlays after cam_pop. */
+void net_pause_overlay(void) {
+#if NET_LOCKSTEP
+    extern void set_text_color(s32);
+    extern void print_text1_center_mode_1(s32, s32, char*, s32, f32, f32);
+    extern Gfx* gDisplayListHead;
+    if (!sNetMenuOpen || gGamestate != RACING) {
+        return;
+    }
+    /* dim panel */
+    gDPPipeSync(gDisplayListHead++);
+    gDPSetRenderMode(gDisplayListHead++, G_RM_OPA_SURF, G_RM_OPA_SURF2);
+    gDPSetCycleType(gDisplayListHead++, G_CYC_FILL);
+    gDPSetFillColor(gDisplayListHead++,
+                    (GPACK_RGBA5551(0, 0, 40, 1) << 16) | GPACK_RGBA5551(0, 0, 40, 1));
+    gDPFillRectangle(gDisplayListHead++, 90, 84, 230, 156);
+    gDPPipeSync(gDisplayListHead++);
+    gDPSetCycleType(gDisplayListHead++, G_CYC_1CYCLE);
+    set_text_color(TEXT_GREEN);
+    print_text1_center_mode_1(0xA0, 0x60, "PAUSED", 0, 0.9f, 0.9f);
+    set_text_color(sNetMenuSel == 0 ? TEXT_BLUE_GREEN_RED_CYCLE_1 : TEXT_YELLOW);
+    print_text1_center_mode_1(0xA0, 0x80, "CONTINUE", 0, 0.8f, 0.8f);
+    set_text_color(sNetMenuSel == 1 ? TEXT_BLUE_GREEN_RED_CYCLE_1 : TEXT_YELLOW);
+    print_text1_center_mode_1(0xA0, 0x94, "QUIT RACE", 0, 0.8f, 0.8f);
+    set_text_color(TEXT_YELLOW);
+    print_text1_center_mode_1(0xA0, 0xB0, "STICK  A  OK   THE RACE GOES ON", 0, 0.5f, 0.5f);
+#endif
+}
+
 static s32 np_spectate_active(void) {
     if (gGamestate != RACING) {
         return 0;
@@ -1618,6 +1716,7 @@ static void net_lockstep_reset(void) {
 
     sCamLocInit = false; /* fresh local-camera context each race */
     sCamFollowFrame = 0xFFFFFFFF; /* first render of the race runs the follow */
+    sNetQuitting = 0; sNetMenuOpen = 0; /* fresh race: no pause/quit in flight */
     gNetProbeAnchors[0] = &sCamLoc1;
     gNetProbeAnchors[1] = &sCamSim1;
     gNetProbeAnchors[2] = sCamLocArr;
@@ -1931,27 +2030,48 @@ void net_lockstep_tick(void) {
  * see gNetTestPauseAt/Len (file scope, netbss, in the map). */
 #if NET_MENU_TEST
     {
-        static u32 sPjHeld;
-        if (gNetTestPauseAt != 0 && gIsGamePaused == 0 && sPjHeld == 0 &&
-            sLsFrame >= gNetTestPauseAt) {
-            gControllers[0].button |= START_BUTTON; /* captured + broadcast below */
-            gControllers[0].buttonPressed |= START_BUTTON;
-            netpak_debug_poke(0xA5000000u | (sLsFrame & 0xFFFFFFu)); /* pause pressed */
-        }
-        if (gIsGamePaused != 0 && gNetTestPauseAt != 0) {
-            u32 len = (gNetTestPauseLen != 0) ? gNetTestPauseLen : 300;
-            sPjHeld++;
-            if (sPjHeld == 1) {
-                netpak_debug_poke(0xA6000000u | (sLsFrame & 0xFFFFFFu)); /* paused */
+        /* Overlay-pause injector (v57 model): at gNetTestPauseAt, press START
+         * to OPEN the local pause overlay; hold gNetTestPauseLen ticks (the
+         * kart coasts, sim keeps running); then CONTINUE (close) — or QUIT if
+         * gNetTestPauseLen has the 0x10000 bit set (low bits = hold ticks). */
+        static u32 sPjPhase; /* 0 idle, 1 opened, 2 done */
+        static u32 sPjTicks;
+        if (gNetTestPauseAt != 0 && sLsFrame >= gNetTestPauseAt) {
+            u32 quit = (gNetTestPauseLen & 0x10000u) != 0;
+            u32 hold = gNetTestPauseLen & 0xFFFFu;
+            if (hold == 0) {
+                hold = 300;
             }
-            if (sPjHeld > len && (sPjHeld % 20) == 0) {
-                gControllers[0].buttonPressed |= START_BUTTON; /* menu resume —
-                    PAUSER ONLY: the peer must resume via LSRESUME broadcast */
+            if (sPjPhase == 0) {
+                gControllers[0].button |= START_BUTTON;
+                gControllers[0].buttonPressed |= START_BUTTON;
+                netpak_debug_poke(0xA5000000u | (sLsFrame & 0xFFFFFFu)); /* opened */
+                sPjPhase = 1;
+                sPjTicks = 0;
+            } else if (sPjPhase == 1) {
+                sPjTicks++;
+                if (sPjTicks == 1) {
+                    netpak_debug_poke(0xA6000000u | (sLsFrame & 0xFFFFFFu)); /* held */
+                }
+                if (sPjTicks == hold) {
+                    if (quit) {
+                        gControllers[0].button |= D_JPAD;      /* select QUIT */
+                        gControllers[0].buttonPressed |= D_JPAD;
+                    } else {
+                        gControllers[0].button |= START_BUTTON; /* close = continue */
+                        gControllers[0].buttonPressed |= START_BUTTON;
+                        netpak_debug_poke(0xA7000000u | (sLsFrame & 0xFFFFFFu));
+                        sPjPhase = 2;
+                        gNetTestPauseAt = 0;
+                    }
+                } else if (quit && sPjTicks == hold + 6) {
+                    gControllers[0].button |= A_BUTTON;         /* confirm QUIT */
+                    gControllers[0].buttonPressed |= A_BUTTON;
+                    netpak_debug_poke(0xA7000000u | (sLsFrame & 0xFFFFFFu)); /* quit */
+                    sPjPhase = 2;
+                    gNetTestPauseAt = 0;
+                }
             }
-        } else if (sPjHeld != 0 && gIsGamePaused == 0) {
-            netpak_debug_poke(0xA7000000u | (sLsFrame & 0xFFFFFFu)); /* resumed */
-            sPjHeld = 0;
-            gNetTestPauseAt = 0; /* one-shot */
         }
     }
 #endif /* NET_MENU_TEST (pause injector) */
@@ -2156,7 +2276,9 @@ void net_lockstep_tick(void) {
         }
     } else
 #endif
-    if (!sLsStall && gIsGamePaused == 0 && !sLsLocalSpec) {
+    /* online pause overlay: consume the pad for the menu + coast the kart */
+    net_pause_menu_tick();
+    if (!sLsStall && gIsGamePaused == 0 && !sLsLocalSpec && !sNetQuitting) {
         LsInput* s = &sLsInput[me][f % LS_RING];
         s->button = gControllers[0].button;
         s->stickX = (s8) gControllers[0].rawStickX;
@@ -2165,7 +2287,7 @@ void net_lockstep_tick(void) {
         s->frame = f;
     }
 
-    if (!NP_REPLAYING && !sLsLocalSpec) {
+    if (!NP_REPLAYING && !sLsLocalSpec && !sNetQuitting) {
         /* broadcast my last LS_REDUN frames (redundancy covers a dropped datagram) */
         base = (s32) f - (LS_REDUN - 1);
         if (base < 0) {

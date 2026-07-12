@@ -305,6 +305,15 @@ void net_menu_online_clear(void) {
     sOnlineArmed = false;
 }
 
+/* QUIT mid-race (net_race pause overlay): disengage the in-race netcode so the
+ * quitter's lockstep tick no-ops immediately — it stops sending (peers drop it
+ * to a CPU via the normal machinery) and its race is no longer lockstep-gated,
+ * so the vanilla quit transition can complete to the menu. The room is left
+ * separately (netpak_session_leave). */
+void net_menu_online_end(void) {
+    sOnlineActive = false;
+}
+
 /* Reliable-broadcast a lobby control message to every known peer (ch1 is
  * unicast-only per spec §11, so send one copy per peer). */
 static void online_msg_send_all(const OnlineMsg* m) {

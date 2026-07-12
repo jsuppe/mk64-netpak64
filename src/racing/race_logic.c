@@ -829,15 +829,19 @@ void func_8028F970(void) {
                 func_800029B0();
             }
         }
+        { /* NetPak64: ONLINE pause never stops the sim — the netcode shows a
+             * LOCAL overlay menu (net_pause_menu_tick) and the race continues
+             * for everyone. Swallow START here so the vanilla sim-stopping
+             * pause never engages online. */
+            extern s32 net_menu_online_active(void);
+            if (net_menu_online_active()) {
+                controller->buttonPressed &= ~START_BUTTON;
+            }
+        }
         if ((controller->buttonPressed & START_BUTTON) && (!(controller->button & R_TRIG)) &&
             (!(controller->button & L_TRIG))) {
             func_8028DF00();
-            { /* NetPak64: online, the pause menu must run on each console's
-                 LOCAL pad — the pauser's slot can be a ring-fed controller
-                 frozen by the pause itself (dead menu on every console). */
-                extern s32 net_menu_online_active(void);
-                gIsGamePaused = net_menu_online_active() ? 1 : (controller - gControllerOne) + 1;
-            }
+            gIsGamePaused = (controller - gControllerOne) + 1;
             controller->buttonPressed = 0;
             func_800C9F90(1);
             gPauseTriggered = 1;
