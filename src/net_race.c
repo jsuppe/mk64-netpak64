@@ -61,7 +61,7 @@ extern void osSyncPrintf(const char* fmt, ...); /* declared in PR/os.h (not via 
  * and pick ONLINE, so Increment 1 can be verified without a controller. Set to
  * 0 to disable. Pokes gMenuSelection (0xE0..) + a 0xFF..F success marker to
  * NP64_TRACE_IO. */
-#define NET_MENU_TEST 0
+#define NET_MENU_TEST 1
 #define NET_DETECTOR_SELFTEST 0 /* 1 = poison one sim mid-race to prove 0x7D fires */
 #define NET_ITEM_PROBE 0        /* 1 = per-console item grants (DIVERGENT by design) */ /* 1 = poison one sim mid-race to prove 0x7D fires */
 /* NET_DIAG: keep the render/position forensics pokes in HUMAN builds so a
@@ -299,7 +299,7 @@ static void net_race_menu_test(void) {
  * start-sequence handler instead of the driving path — the kart won't throttle.
  * Diagnosed by poking gPlayers[0].type (0xE200) to a device register visible
  * in NP64_TRACE_IO. Fix = drive the intro state machine properly (see task). */
-#define NET_DEMO_AUTODRIVE 0
+#define NET_DEMO_AUTODRIVE 1
 #define NET_AUTODRIVE_AFTER_FRAMES 45 /* just after start_race() forces GO */
 
 /* Input overlay (test builds): last inputs the autodrive injected for the LOCAL
@@ -2898,6 +2898,16 @@ void net_lockstep_tick(void) {
                 }
                 netpak_debug_poke(0x76000000u | (df & 0xFFFFFFu));
                 netpak_debug_poke(0x77000000u | (h & 0xFFFFFFu));
+#if NET_MENU_TEST
+                if (df < 4) { /* BATTLE probe: mode + balloon counts at start */
+                    extern s32 gModeSelection;
+                    extern s16 gPlayerBalloonCount[];
+                    netpak_debug_poke(0x74000000u | ((u32) (gModeSelection & 0xFF) << 16) |
+                                      ((u32) (gPlayerBalloonCount[0] & 0xFF) << 8) |
+                                      (u32) (gPlayerBalloonCount[1] & 0xFF));
+                    netpak_debug_poke(0x75000000u | ((u32) gPlayers[0].type & 0xFFFFFFu));
+                }
+#endif
 
 #if NET_MENU_TEST
                 /* frame-0 forensics: per-kart state hash (0xB0+k) and the

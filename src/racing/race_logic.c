@@ -112,6 +112,14 @@ void update_player_battle_status(void) {
             aliveCounter++;
         }
     }
+#if NET_MENU_TEST
+    { extern void netpak_debug_poke(u32);
+      static u32 bsTick;
+      if ((bsTick++ & 15) == 0 || aliveCounter <= 1) {
+        netpak_debug_poke(0x6A000000u | ((u32) aliveCounter << 8) | (u32) deadCounter);
+      }
+    }
+#endif
     if (aliveCounter == 1) {
         gPlayerWinningIndex = (s32) playersAlive[0];
         func_8028E028();
