@@ -61,7 +61,7 @@ extern void osSyncPrintf(const char* fmt, ...); /* declared in PR/os.h (not via 
  * and pick ONLINE, so Increment 1 can be verified without a controller. Set to
  * 0 to disable. Pokes gMenuSelection (0xE0..) + a 0xFF..F success marker to
  * NP64_TRACE_IO. */
-#define NET_MENU_TEST 1
+#define NET_MENU_TEST 0
 #define NET_DETECTOR_SELFTEST 0 /* 1 = poison one sim mid-race to prove 0x7D fires */
 #define NET_ITEM_PROBE 0        /* 1 = per-console item grants (DIVERGENT by design) */ /* 1 = poison one sim mid-race to prove 0x7D fires */
 /* NET_DIAG: keep the render/position forensics pokes in HUMAN builds so a
@@ -299,7 +299,7 @@ static void net_race_menu_test(void) {
  * start-sequence handler instead of the driving path — the kart won't throttle.
  * Diagnosed by poking gPlayers[0].type (0xE200) to a device register visible
  * in NP64_TRACE_IO. Fix = drive the intro state machine properly (see task). */
-#define NET_DEMO_AUTODRIVE 1
+#define NET_DEMO_AUTODRIVE 0
 #define NET_AUTODRIVE_AFTER_FRAMES 45 /* just after start_race() forces GO */
 
 /* Input overlay (test builds): last inputs the autodrive injected for the LOCAL
@@ -1899,6 +1899,31 @@ void net_lockstep_tick(void) {
     u32 f, df;
     s32 racing = (gGamestate == RACING);
 
+#if NET_MENU_TEST
+    { /* BATTLE probe: trace the top-level state each frame, poke 0x6C on any
+       * change of (gGamestate, gActiveScreenMode, D_800DC510, gGotoMode). Runs
+       * every frame incl. non-racing, so it captures the exit OUT of RACING and
+       * where the game bails to. Inert unless gNetTestBattle. */
+        extern u32 gNetTestBattle;
+        extern s32 gActiveScreenMode;
+        extern s32 gGotoMode;
+        extern s32 gModeSelection;
+        extern u16 D_800DC510;
+        static s32 sBtTickLast = -1;
+        if (gNetTestBattle) {
+            s32 cur = ((gGamestate & 0xFF) << 24) | ((gActiveScreenMode & 0xFF) << 16) |
+                      ((D_800DC510 & 0xFF) << 8) | (gGotoMode & 0xFF);
+            if (cur != sBtTickLast) {
+                sBtTickLast = cur;
+                netpak_debug_poke(0x6C000000u | ((u32) cur & 0xFFFFFFu));
+                netpak_debug_poke(0x6D000000u | ((u32) (gGamestate & 0xFF) << 16) |
+                                  ((u32) (gModeSelection & 0xFF) << 8) |
+                                  ((u32) (gActiveScreenMode & 0xFF)));
+            }
+        }
+    }
+#endif
+
     /* SPECTATOR: snapshot the raw local pad before the input-apply below
      * overwrites gControllers[] from the ring (read_controllers() ran just
      * before this call — main.c). Render-side camera code consumes it. */
@@ -2104,6 +2129,20 @@ void net_lockstep_tick(void) {
     if (np > NET_MAX_SLOTS) {
         np = NET_MAX_SLOTS;
     }
+#if NET_MENU_TEST
+    { /* BATTLE probe: me / np / sBlkApplied on change — pins down why the host
+       * retransmit branch (me==0 && np>1) is or isn't taken. */
+        extern u32 gNetTestBattle;
+        static s32 sMeNpLast = -1;
+        if (gNetTestBattle) {
+            s32 cur = ((me & 0xFF) << 16) | ((np & 0xFF) << 8) | (sBlkApplied ? 1 : 0);
+            if (cur != sMeNpLast) {
+                sMeNpLast = cur;
+                netpak_debug_poke(0x6E000000u | ((u32) cur & 0xFFFFFFu));
+            }
+        }
+    }
+#endif
 
     /* Make the non-local player slots human-controlled (they read a controller
      * instead of running AI). Identical on every console -> identical sim. Keep
@@ -2220,6 +2259,20 @@ void net_lockstep_tick(void) {
         for (i = 1; i < np && i < 8; i++) {
             want |= (u8) (1 << i);
         }
+#if NET_MENU_TEST
+        { /* BATTLE probe: host retransmit state — want mask, ackmask, ticks. */
+            extern u32 gNetTestBattle;
+            static s32 sRtxLast = -1;
+            if (gNetTestBattle) {
+                s32 cur = ((want & 0xFF) << 16) | ((sBlkAckMask & 0xFF) << 8) |
+                          ((sBlkTicks < 900) ? 1 : 0);
+                if (cur != sRtxLast) {
+                    sRtxLast = cur;
+                    netpak_debug_poke(0x6A000000u | ((u32) cur & 0xFFFFFFu));
+                }
+            }
+        }
+#endif
         if ((sBlkAckMask & want) != want && sBlkTicks < 900) {
             sBlkTicks++;
             if ((sBlkTicks & 3) == 0) {
@@ -2461,6 +2514,17 @@ void net_lockstep_tick(void) {
                     sBlkSeqMask |= (1u << bm->seq);
                     sBlkGot += bm->len;
                 }
+#if NET_MENU_TEST
+                { /* BATTLE probe: joiner block progress — nChunks in hi byte,
+                   * current seqmask popcount proxy in low. Shows whether chunks
+                   * arrive and how close to complete. */
+                    extern u32 gNetTestBattle;
+                    if (gNetTestBattle) {
+                        netpak_debug_poke(0x69000000u | ((nChunks & 0xFF) << 16) |
+                                          (sBlkSeqMask & 0xFFFFu));
+                    }
+                }
+#endif
                 if (nChunks < 32 && sBlkSeqMask == (1u << nChunks) - 1u) {
                     sBlkApplied = true;
 #if NET_DIAG

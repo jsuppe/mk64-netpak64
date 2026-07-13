@@ -935,6 +935,23 @@ void func_8028FCBC(void) {
     if (gDemoUseController) {
         end_demo_update();
     }
+    { /* BATTLE probe (test-only): trace the race lifecycle state machine so we
+       * can see exactly where a 1P-screen battle stalls/exits. Poke 0x6B on any
+       * change of (D_800DC510, gGotoMode). Gated on gNetTestBattle so it is inert
+       * in product. */
+        extern u32 gNetTestBattle;
+        extern void netpak_debug_poke(u32);
+        static s32 sBtLast = -1;
+        if (gNetTestBattle) {
+            s32 cur = ((s32) D_800DC510 << 8) | (gGotoMode & 0xFF);
+            if (cur != sBtLast) {
+                sBtLast = cur;
+                netpak_debug_poke(0x6B000000u | ((u32) (D_800DC510 & 0xFF) << 16) |
+                                  ((u32) (gGotoMode & 0xFF) << 8) |
+                                  ((u32) (gModeSelection & 0xFF)));
+            }
+        }
+    }
     switch (D_800DC510) {
         case 0:
             if (!gDemoMode) { // If we're not in the demo mode, play the starting fanfare for the current mode (Grand Prix / Time Trials / VS / Battle)

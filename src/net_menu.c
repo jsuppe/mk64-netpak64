@@ -251,15 +251,32 @@ static void net_menu_start_race(void) {
      * the kart never gets placed on the grid and can't drive. Presented to the
      * player as "ONLINE" in the menus regardless of the underlying mode. */
     {
-        /* PROBE (test builds): force online BATTLE on Big Donut when
-         * gNetTestBattle is poked, to map what breaks in 1P-screen battle. */
+        /* PROBE (test builds): map what breaks in 1P-screen battle. The knob
+         * separates MODE from COURSE so we can bisect the failure:
+         *   1 = BATTLE + Big Donut (0x13)   (full battle)
+         *   2 = GRAND_PRIX + Big Donut       (arena, GP rules -> is it the course?)
+         *   3 = BATTLE + Luigi Raceway (0x0) (GP course, battle rules -> is it the mode?)
+         * else = GRAND_PRIX (normal online). */
         extern u32 gNetTestBattle;
-        if (gNetTestBattle) {
-            gModeSelection = BATTLE;
-            gCurrentCourseId = 0x13; /* COURSE_BIG_DONUT */
-            sOnlineCourse = 0x13;
-        } else {
-            gModeSelection = GRAND_PRIX;
+        switch (gNetTestBattle) {
+            case 1:
+                gModeSelection = BATTLE;
+                gCurrentCourseId = 0x13; /* COURSE_BIG_DONUT */
+                sOnlineCourse = 0x13;
+                break;
+            case 2:
+                gModeSelection = GRAND_PRIX;
+                gCurrentCourseId = 0x13; /* Big Donut, but GP rules */
+                sOnlineCourse = 0x13;
+                break;
+            case 3:
+                gModeSelection = BATTLE;
+                gCurrentCourseId = 0x0; /* Luigi Raceway, but BATTLE rules */
+                sOnlineCourse = 0x0;
+                break;
+            default:
+                gModeSelection = GRAND_PRIX;
+                break;
         }
     }
     gScreenModeSelection = SCREEN_MODE_1P;
