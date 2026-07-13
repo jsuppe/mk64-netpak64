@@ -3538,27 +3538,49 @@ void render_lakitu(s32 cameraId) {
     f32 var_f2;
     s32 objectIndex;
     Object* object;
+    Vec3f drawPos;
 
     objectIndex = gIndexLakituList[cameraId];
     camera = &camera1[cameraId];
     if (is_obj_flag_status_active(objectIndex, 0x00000010) != 0) {
         object = &gObjectList[objectIndex];
+        drawPos[0] = object->pos[0];
+        drawPos[1] = object->pos[1];
+        drawPos[2] = object->pos[2];
+        {
+            /* NetPak64 ONLINE JOINER: the countdown Lakitu is a per-player object
+             * anchored to gPlayers[cameraId] — in single-screen mode that is slot 0,
+             * i.e. the HOST's kart online. The joiner's local view follows its OWN
+             * kart, so the host's Lakitu sits off to the side / off-screen. Re-anchor
+             * the DRAW position to the local kart, preserving the same world offset
+             * the sim gave the Lakitu from player 0 (at the start line every kart is
+             * parallel, so the world delta carries over). Render-only: the sim object
+             * and its deterministic countdown-light state are untouched. Host and
+             * offline (local slot 0) render unchanged. */
+            extern s32 net_lockstep_local_slot(void);
+            s32 ls = net_lockstep_local_slot();
+            if (ls > 0 && ls < NUM_PLAYERS) {
+                drawPos[0] = gPlayerOne[ls].pos[0] + (object->pos[0] - gPlayerOne[0].pos[0]);
+                drawPos[1] = gPlayerOne[ls].pos[1] + (object->pos[1] - gPlayerOne[0].pos[1]);
+                drawPos[2] = gPlayerOne[ls].pos[2] + (object->pos[2] - gPlayerOne[0].pos[2]);
+            }
+        }
         object->orientation[0] = 0;
-        object->orientation[1] = func_800418AC(object->pos[0], object->pos[2], camera->pos);
+        object->orientation[1] = func_800418AC(drawPos[0], drawPos[2], camera->pos);
         object->orientation[2] = 0x8000;
         if (func_80072354(objectIndex, 2) != 0) {
-            draw_2d_texture_at(object->pos, object->orientation, object->sizeScaling, (u8*) object->activeTLUT,
+            draw_2d_texture_at(drawPos, object->orientation, object->sizeScaling, (u8*) object->activeTLUT,
                                object->activeTexture, object->vertex, (s32) object->textureWidth,
                                (s32) object->textureHeight, (s32) object->textureWidth,
                                (s32) object->textureHeight / 2);
         } else {
-            func_800485C4(object->pos, object->orientation, object->sizeScaling, (s32) object->primAlpha,
+            func_800485C4(drawPos, object->orientation, object->sizeScaling, (s32) object->primAlpha,
                           (u8*) object->activeTLUT, object->activeTexture, object->vertex, (s32) object->textureWidth,
                           (s32) object->textureHeight, (s32) object->textureWidth, (s32) object->textureHeight / 2);
         }
         if (gScreenModeSelection == SCREEN_MODE_1P) {
-            var_f0 = object->pos[0] - D_8018CF14->pos[0];
-            var_f2 = object->pos[2] - D_8018CF14->pos[2];
+            var_f0 = drawPos[0] - D_8018CF14->pos[0];
+            var_f2 = drawPos[2] - D_8018CF14->pos[2];
             if (var_f0 < 0.0f) {
                 var_f0 = -var_f0;
             }
@@ -3566,7 +3588,7 @@ void render_lakitu(s32 cameraId) {
                 var_f2 = -var_f2;
             }
             if ((var_f0 + var_f2) <= 200.0) {
-                func_8004A630(&D_8018C0B0[cameraId], object->pos, 0.35f);
+                func_8004A630(&D_8018C0B0[cameraId], drawPos, 0.35f);
             }
         }
     }
