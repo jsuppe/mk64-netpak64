@@ -1240,6 +1240,16 @@ void func_8003D080(void) {
                         camera_init(player->pos[0], player->pos[1], player->pos[2], player->rotation[1], 1, 0);
                         break;
 
+                    case BATTLE:
+                        /* NetPak64 single-screen battle: use the battle camera
+                         * (type 9), same as split-screen battle. The GP/default
+                         * cam (type 10) follows the racing PATH, which battle
+                         * arenas (Big Donut etc.) don't have -> it hangs on the
+                         * first sim frame. Vanilla never ran 1P-screen battle so
+                         * this case never existed. */
+                        camera_init(player->pos[0], player->pos[1], player->pos[2], player->rotation[1], 9, 0);
+                        break;
+
                     default:
                         camera_init(player->pos[0], player->pos[1], player->pos[2], player->rotation[1], 10, 0);
                         break;

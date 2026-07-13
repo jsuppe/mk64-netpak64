@@ -1950,6 +1950,16 @@ void net_lockstep_tick(void) {
                                   ((u32) (gActiveScreenMode & 0xFF)));
             }
         }
+        { /* CLEAN gGamestate tracer: poke 0x63 on ANY change of gGamestate alone
+           * (full 16-bit value + D_800DC510), isolating the RACING exit. Resolves
+           * the 0x6D-vs-heartbeat contradiction. */
+            static s32 sGsLast = -1;
+            if (gNetTestBattle && gGamestate != sGsLast) {
+                sGsLast = gGamestate;
+                netpak_debug_poke(0x63000000u | ((u32) (gGamestate & 0xFFFF) << 8) |
+                                  ((u32) D_800DC510 & 0xFFu));
+            }
+        }
     }
 #endif
 
@@ -1961,6 +1971,20 @@ void net_lockstep_tick(void) {
     }
 
     if (!netpak_present() || !net_menu_online_active() || !racing) {
+#if NET_MENU_TEST
+        { /* BATTLE probe: WHICH gate tripped the early-return (NOT gated on
+           * racing — that was the bug). gGamestate<<8 | present<<2 | active<<1 |
+           * racing. Throttled. */
+            extern u32 gNetTestBattle;
+            static u32 sErN;
+            if (gNetTestBattle && (sErN++ & 7) == 0) {
+                netpak_debug_poke(0x64000000u | ((u32) (gGamestate & 0xFFFF) << 8) |
+                                  ((netpak_present() ? 1u : 0u) << 2) |
+                                  ((net_menu_online_active() ? 1u : 0u) << 1) |
+                                  (racing ? 1u : 0u));
+            }
+        }
+#endif
 #if NET_DIAG
         /* forensics: racing frames that ran UNGATED (sim advances while
          * lockstep sits out) + which gate failed. Cleared by tapeload.py. */

@@ -633,35 +633,49 @@ void race_logic_loop(void) {
              * Always false outside an online lockstep race. */
             if (gIsGamePaused == 0 && !net_lockstep_stalled()) {
                 for (i = 0; i < gTickSpeed; i++) {
+                    { /* BATTLE probe: step markers through the 1P sim block. The
+                       * LAST 0x50 poke before the freeze names the hanging fn.
+                       * Inert unless gNetTestBattle (0 in product). */
+                        extern u32 gNetTestBattle;
+                        if (gNetTestBattle) netpak_debug_poke(0x50000000u);
+                    }
                     if (D_8015011E) {
                         gCourseTimer += COURSE_TIMER_ITER;
                     }
                     np_perf_enter(0);
                     func_802909F0();
                     np_perf_leave(0);
+                    { extern u32 gNetTestBattle; if (gNetTestBattle) netpak_debug_poke(0x50000001u); }
                     np_perf_enter(1);
                     evaluate_collision_for_players_and_actors();
                     np_perf_leave(1);
+                    { extern u32 gNetTestBattle; if (gNetTestBattle) netpak_debug_poke(0x50000002u); }
                     handle_a_press_for_all_players_during_race();
                     /* Online lockstep: 1P GP routes drive input to player 0 only;
                      * run the same handler for the other human slots so remote
                      * players' karts actually drive (identical on every console). */
                     net_lockstep_drive_humans();
+                    { extern u32 gNetTestBattle; if (gNetTestBattle) netpak_debug_poke(0x50000003u); }
                     np_perf_enter(3);
                     func_8001EE98(gPlayerOneCopy, camera1, 0);
                     np_perf_leave(3);
+                    { extern u32 gNetTestBattle; if (gNetTestBattle) netpak_debug_poke(0x50000004u); }
                     np_perf_enter(4);
                     func_80028F70();
                     np_perf_leave(4);
+                    { extern u32 gNetTestBattle; if (gNetTestBattle) netpak_debug_poke(0x50000005u); }
                     np_perf_enter(5);
                     func_8028F474();
                     func_80059AC8();
                     np_perf_leave(5);
+                    { extern u32 gNetTestBattle; if (gNetTestBattle) netpak_debug_poke(0x50000006u); }
                     np_perf_enter(2);
                     update_course_actors();
                     course_update_water();
+                    { extern u32 gNetTestBattle; if (gNetTestBattle) netpak_debug_poke(0x50000007u); }
                     func_8028FCBC();
                     np_perf_leave(2);
+                    { extern u32 gNetTestBattle; if (gNetTestBattle) netpak_debug_poke(0x50000008u); }
                 }
                 np_perf_enter(10);
                 func_80022744();

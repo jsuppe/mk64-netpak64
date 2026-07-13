@@ -592,10 +592,12 @@ void func_80028C44(Player* player, Camera* camera, s8 playerId, s8 screenId) {
 }
 
 void func_80028D3C(Player* player, Camera* camera, s8 playerId, s8 screenId) {
+    { extern u32 gNetTestBattle; if (gNetTestBattle) netpak_debug_poke(0x52000000u | ((u32)(playerId) << 8) | 0x01); }
     if ((((player->type & PLAYER_START_SEQUENCE) == 0) && (D_800DC510 != 5)) || (player->lakituProps & 2) != 0 ||
         (player->lakituProps & LAKITU_SCENE) != 0 ||
         (player->effects & (LIGHTNING_EFFECT | EXPLOSION_CRASH_EFFECT | HIT_BY_STAR_EFFECT | SQUISH_EFFECT |
                             POST_SQUISH_EFFECT | TERRAIN_TUMBLE_EFFECT | 0xC00 | 0xC0)) != 0) {
+        { extern u32 gNetTestBattle; if (gNetTestBattle) netpak_debug_poke(0x52000000u | ((u32)(playerId) << 8) | 0x02); }
         player->effects &= ~LOST_RACE_EFFECT;
         if (((player->effects & BANANA_SPINOUT_EFFECT) == BANANA_SPINOUT_EFFECT) ||
             ((player->effects & DRIVING_SPINOUT_EFFECT) == DRIVING_SPINOUT_EFFECT) ||
@@ -607,22 +609,30 @@ void func_80028D3C(Player* player, Camera* camera, s8 playerId, s8 screenId) {
             ((player->effects & HIT_BY_STAR_EFFECT) == HIT_BY_STAR_EFFECT) ||
             ((player->effects & LIGHTNING_STRIKE_EFFECT) == LIGHTNING_STRIKE_EFFECT) ||
             ((player->kartProps & UNUSED_0x800) != 0)) {
+            { extern u32 gNetTestBattle; if (gNetTestBattle) netpak_debug_poke(0x52000000u | ((u32)(playerId) << 8) | 0x03); }
             func_8002E594(player, camera, screenId, playerId);
         } else {
+            { extern u32 gNetTestBattle; if (gNetTestBattle) netpak_debug_poke(0x52000000u | ((u32)(playerId) << 8) | 0x04); }
             func_8002D268(player, camera, screenId, playerId);
         }
+        { extern u32 gNetTestBattle; if (gNetTestBattle) netpak_debug_poke(0x52000000u | ((u32)(playerId) << 8) | 0x05); }
     } else {
         player->effects = player->effects & ~MIDAIR_EFFECT;
     }
 }
 
 void func_80028E70(Player* player, Camera* camera, s8 playerId, s8 screenId) {
+    extern u32 gNetTestBattle;
+#define BTMARK(stage) do { if (gNetTestBattle) netpak_debug_poke(0x51000000u | ((u32)(playerId) << 8) | (stage)); } while (0)
     if ((player->type & PLAYER_EXISTS) == PLAYER_EXISTS) {
+        BTMARK(0x01); /* entry */
         // NetPak64: if this slot is a remote-driven puppet, apply the latest
         // networked transform and skip local simulation for it entirely.
         if (net_race_apply_puppet(player, playerId)) {
+            BTMARK(0x0F); /* puppet applied, done */
             return;
         }
+        BTMARK(0x02); /* not a puppet */
         switch (gGamestate) {
             case ENDING:
                 if (!(player->type & PLAYER_START_SEQUENCE)) {
@@ -633,6 +643,7 @@ void func_80028E70(Player* player, Camera* camera, s8 playerId, s8 screenId) {
                 break;
             default:
                 func_80027DA8(player, playerId);
+                BTMARK(0x03); /* past func_80027DA8 */
                 switch (gModeSelection) {
                     case TIME_TRIALS:
                     case VERSUS:
@@ -645,9 +656,11 @@ void func_80028E70(Player* player, Camera* camera, s8 playerId, s8 screenId) {
                         func_80028864(player, camera, playerId, screenId);
                         break;
                 }
+                BTMARK(0x04); /* past mode update */
                 break;
         }
     }
+#undef BTMARK
 }
 
 UNUSED void func_80028F5C(UNUSED s32 arg0, UNUSED s32 arg1, UNUSED s32 arg2, UNUSED s32 arg3) {
