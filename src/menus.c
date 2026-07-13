@@ -1728,6 +1728,37 @@ void course_select_menu_act(struct Controller* arg0, u16 controllerIdx) {
         static s32 sOnlineLocked;
         s32 hostCourse = net_menu_online_course();
 
+        if (gModeSelection == BATTLE) {
+            /* ONLINE BATTLE: the arena is pre-decided (host-picked in the lobby,
+             * rode START chars[3]) — NOT chosen on this screen. Host AND joiner
+             * run the SAME auto-drive: walk the battle-course sub-state to OK,
+             * then hold at the SAME start barrier GP uses so the whole room
+             * enters RACING on one frame. Unsynchronized launch is exactly what
+             * wedged the joiner's race-entry block-sync (task #20). */
+            s32 bi;
+            btnAndStick = 0; /* swallow the pad: no manual pick, no back-out */
+            gCupSelection = BATTLE_CUP;
+            /* map the arena course id to its battle-cup slot so the sub-state's
+             * gCupCourseOrder lookup re-derives OUR arena, not cup slot 0 */
+            for (bi = 0; bi < 4; bi++) {
+                if (gCupCourseOrder[BATTLE_CUP][bi] == (s16) hostCourse) {
+                    gCourseIndexInCup = bi;
+                    break;
+                }
+            }
+            if (gSubMenuSelection != SUB_MENU_MAP_SELECT_OK) {
+                sOnlinePhase++;
+                if ((sOnlinePhase % 20) == 0) {
+                    btnAndStick |= A_BUTTON; /* BATTLE_COURSE -> OK (dwell for loads) */
+                }
+            } else if (net_online_barrier_ready()) {
+                btnAndStick |= A_BUTTON; /* synchronized launch on the host's GO */
+                net_menu_online_clear();
+                sOnlineLocked = 0;
+            }
+            goto online_host_interactive;
+        }
+
         if (net_menu_is_host()) {
             extern bool net_replay_armed(void);
             if (!net_replay_armed()) {

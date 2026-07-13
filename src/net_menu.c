@@ -133,6 +133,11 @@ static s32  sSel;             /* OM_MAIN cursor: 0 HOST, 1 JOIN, 2 FIND, 3 NAME 
 static char sCode[8];         /* room code (create result or join entry) */
 static s32  sCcSel = CC_100;  /* host's engine-class pick (50/100/150cc) */
 static s32  sOnlineCc = CC_100; /* class this race runs at (synced via START) */
+static s32  sOnlineMode = GRAND_PRIX; /* race mode this session (GRAND_PRIX or
+                                       * BATTLE), synced via START chars[2]. Old
+                                       * hosts send 0 -> GRAND_PRIX (compatible). */
+static u8   sOnlineArena = 0; /* battle arena course id, synced via START chars[3]
+                               * (only meaningful when sOnlineMode == BATTLE). */
 static s32  sEntryPos;        /* OM_JOIN_ENTRY cursor 0..CODE_LEN-1 */
 static char sName[NAME_LEN + 1]; /* player name, space-padded while editing */
 static s32  sNamePos;         /* OM_NAME_ENTRY cursor 0..NAME_LEN-1 */
@@ -225,6 +230,21 @@ static s32 sOnlineDelay; /* lockstep input delay for the coming race (v40):
                           * same value from START chars[1]. 0 until set;
                           * net_lockstep_set_delay clamps to 2..8. */
 
+/* Host: decide this session's mode + arena, to ride START (chars[2]/chars[3]).
+ * For now driven by the gNetTestBattle probe knob (0 in product -> GRAND_PRIX);
+ * the host lobby BATTLE toggle + arena picker will set these directly. Keep the
+ * arena a real, spawnable stage — spawn_players.c currently has the 1P-screen
+ * battle grid only for Big Donut (0x13). */
+static void net_menu_host_set_mode(void) {
+    extern u32 gNetTestBattle; /* net_race.c; 0 unless a test build pokes it */
+    sOnlineMode = GRAND_PRIX;
+    sOnlineArena = 0;
+    if (gNetTestBattle) {
+        sOnlineMode = BATTLE;
+        sOnlineArena = 0x13; /* COURSE_BIG_DONUT */
+    }
+}
+
 static void net_menu_start_race(void) {
     extern void net_lockstep_set_delay(s32 d);
     extern bool net_replay_armed(void);
@@ -250,34 +270,16 @@ static void net_menu_start_race(void) {
      * engine (spawn_players.c SCREEN_MODE_1P handles only GP + TIME_TRIALS), so
      * the kart never gets placed on the grid and can't drive. Presented to the
      * player as "ONLINE" in the menus regardless of the underlying mode. */
-    {
-        /* PROBE (test builds): map what breaks in 1P-screen battle. The knob
-         * separates MODE from COURSE so we can bisect the failure:
-         *   1 = BATTLE + Big Donut (0x13)   (full battle)
-         *   2 = GRAND_PRIX + Big Donut       (arena, GP rules -> is it the course?)
-         *   3 = BATTLE + Luigi Raceway (0x0) (GP course, battle rules -> is it the mode?)
-         * else = GRAND_PRIX (normal online). */
-        extern u32 gNetTestBattle;
-        switch (gNetTestBattle) {
-            case 1:
-                gModeSelection = BATTLE;
-                gCurrentCourseId = 0x13; /* COURSE_BIG_DONUT */
-                sOnlineCourse = 0x13;
-                break;
-            case 2:
-                gModeSelection = GRAND_PRIX;
-                gCurrentCourseId = 0x13; /* Big Donut, but GP rules */
-                sOnlineCourse = 0x13;
-                break;
-            case 3:
-                gModeSelection = BATTLE;
-                gCurrentCourseId = 0x0; /* Luigi Raceway, but BATTLE rules */
-                sOnlineCourse = 0x0;
-                break;
-            default:
-                gModeSelection = GRAND_PRIX;
-                break;
-        }
+    /* Mode + arena come from the lobby and ride START (chars[2]/chars[3]) so
+     * every console agrees BEFORE the launch barrier. BATTLE routes through the
+     * SAME barrier as GP (course_select_menu_act) — the whole room enters RACING
+     * on the same frame, so the host's race-entry block-sync never streams to a
+     * joiner that hasn't launched yet (the wedge that broke unsynced battle). */
+    gModeSelection = sOnlineMode;
+    if (sOnlineMode == BATTLE) {
+        /* the arena IS the course, decided by the host (not picked on-screen) */
+        sOnlineCourse = sOnlineArena;
+        gCurrentCourseId = (s16) sOnlineArena;
     }
     gScreenModeSelection = SCREEN_MODE_1P;
     gPlayerCount = 1;
@@ -552,6 +554,8 @@ bool net_online_barrier_ready(void) {
                     m.chars[1] = (u8) sOnlineDelay; /* same pick as the original
                                                      * START — latecomers must
                                                      * adopt the identical delay */
+                    m.chars[2] = (u8) sOnlineMode;  /* mode + arena too, so a */
+                    m.chars[3] = sOnlineArena;      /* latecomer joins the right race */
                     for (i = 0; i < nr; i++) {
                         netpak_send(roster[i].node_id, 1, &m, sizeof(m));
                     }
@@ -1153,7 +1157,9 @@ void net_menu_update(struct Controller* controller) {
                 OnlineMsg m;
                 s32 ci;
                 net_online_barrier_arm_host(); /* refresh roster, wait for these peers */
-                sOnlineCourse = 0xFF; /* v32: course picked on the REAL course-select screen */
+                net_menu_host_set_mode();      /* GRAND_PRIX or BATTLE + arena */
+                sOnlineCourse = (sOnlineMode == BATTLE) ? sOnlineArena
+                                                        : 0xFF; /* v32: GP course picked on-screen */
                 sOnlineCc = sCcSel;
                 m.tag = OLMSG_TAG;
                 m.spec = 0;
@@ -1166,7 +1172,9 @@ void net_menu_update(struct Controller* controller) {
                 m.chars[0] = (u8) sOnlineCc; /* engine class rides with the course */
                 sOnlineDelay = net_menu_pick_delay(); /* size once, from lobby RTTs */
                 m.chars[1] = (u8) sOnlineDelay; /* every console adopts this (v40) */
-                online_msg_send_all(&m);   /* tell the room which track to load */
+                m.chars[2] = (u8) sOnlineMode;  /* race mode (0 = GRAND_PRIX) */
+                m.chars[3] = sOnlineArena;      /* battle arena (0 unless BATTLE) */
+                online_msg_send_all(&m);   /* tell the room which mode/track to load */
                 net_menu_start_race();     /* -> character select -> locked course -> race */
             }
             break;
@@ -1220,8 +1228,11 @@ void net_menu_update(struct Controller* controller) {
                 /* adopt the host's input-delay pick; old hosts send 0 -> floor 2 */
                 sOnlineDelay = (startMsg.chars[1] >= 2 && startMsg.chars[1] <= 8)
                              ? (s32) startMsg.chars[1] : 2;
+                /* adopt the host's mode + arena (old hosts send 0 -> GRAND_PRIX) */
+                sOnlineMode = (startMsg.chars[2] == BATTLE) ? BATTLE : GRAND_PRIX;
+                sOnlineArena = startMsg.chars[3];
                 net_online_barrier_arm_joiner(startSrc); /* host node id from START */
-                net_menu_start_race(); /* same track as the host */
+                net_menu_start_race(); /* same mode + track as the host */
                 return;
             }
 #if NET_MENU_JOINED_CAN_START
@@ -1232,7 +1243,9 @@ void net_menu_update(struct Controller* controller) {
                 OnlineMsg m;
                 s32 ci;
                 net_online_barrier_arm_host();
-                sOnlineCourse = kCourses[sCourseSel].id;
+                net_menu_host_set_mode(); /* GRAND_PRIX or BATTLE + arena (probe) */
+                sOnlineCourse = (sOnlineMode == BATTLE) ? sOnlineArena
+                                                        : kCourses[sCourseSel].id;
                 sOnlineCc = sCcSel;
                 m.tag = OLMSG_TAG;
                 m.spec = 0;
@@ -1247,6 +1260,8 @@ void net_menu_update(struct Controller* controller) {
                 m.chars[0] = (u8) sOnlineCc;
                 sOnlineDelay = net_menu_pick_delay();
                 m.chars[1] = (u8) sOnlineDelay;
+                m.chars[2] = (u8) sOnlineMode;
+                m.chars[3] = sOnlineArena;
                 online_msg_send_all(&m);
                 net_menu_start_race();
                 return;
