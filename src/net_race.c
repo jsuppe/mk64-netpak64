@@ -1750,6 +1750,17 @@ static void net_lockstep_reset(void) {
     sLsDesync = false;
     sLsDesyncFrame = 0;
     sLsHashLastDf = 0xFFFFFFFFu;
+#if NET_MENU_TEST
+    { /* BATTLE probe: count net_lockstep_reset calls. A re-fire mid-race resets
+       * sBlkApplied -> the joiner re-wedges on the block gate. If 0x61 climbs
+       * past 1 during a battle race, repeated re-engagement is the bug. */
+        extern u32 gNetTestBattle;
+        static u32 sRstN;
+        if (gNetTestBattle) {
+            netpak_debug_poke(0x61000000u | (++sRstN & 0xFFFFFFu));
+        }
+    }
+#endif
     if (sLsDelay < LS_DELAY_MIN || sLsDelay > LS_DELAY_MAX) {
         sLsDelay = LS_DELAY_MIN; /* zero-init bss -> default here */
     }
@@ -1900,6 +1911,24 @@ void net_lockstep_tick(void) {
     s32 racing = (gGamestate == RACING);
 
 #if NET_MENU_TEST
+    { /* BATTLE probe HEARTBEAT: fires every 16th CALL of net_lockstep_tick,
+       * before any gate/return. If 0x60 keeps ticking after the freeze but
+       * stall(0x68)/hash(0x76) stop, a gate (racing/present/active/pause) is
+       * failing; if 0x60 also stops, the MAIN LOOP hung in the sim/render. The
+       * low bits carry racing | present<<1 | active<<2 | paused<<3. */
+        extern u32 gNetTestBattle;
+        extern s32 net_menu_online_active(void);
+        extern u16 gIsGamePaused;
+        static u32 sHb;
+        if (gNetTestBattle && (sHb++ & 15) == 0) {
+            u32 flags = (racing ? 1u : 0u) |
+                        (netpak_present() ? 2u : 0u) |
+                        (net_menu_online_active() ? 4u : 0u) |
+                        (gIsGamePaused ? 8u : 0u);
+            netpak_debug_poke(0x60000000u | ((sHb & 0xFFFFu) << 4) | flags);
+        }
+    }
+
     { /* BATTLE probe: trace the top-level state each frame, poke 0x6C on any
        * change of (gGamestate, gActiveScreenMode, D_800DC510, gGotoMode). Runs
        * every frame incl. non-racing, so it captures the exit OUT of RACING and
@@ -2690,6 +2719,18 @@ void net_lockstep_tick(void) {
             }
         }
 
+#if NET_MENU_TEST
+        { /* BATTLE probe: gate decision each racing frame (throttled) —
+           * blkApplied<<20 | ready<<16 | df. Confirms whether the gate is even
+           * reached and why it stalls (block vs input). */
+            extern u32 gNetTestBattle;
+            static u32 sGateN;
+            if (gNetTestBattle && (sGateN++ & 7) == 0) {
+                netpak_debug_poke(0x62000000u | ((sBlkApplied ? 1u : 0u) << 20) |
+                                  ((ready ? 1u : 0u) << 16) | (df & 0xFFFFu));
+            }
+        }
+#endif
         if (!ready) {
             sLsStall = true;
             sLsStallCount++;
