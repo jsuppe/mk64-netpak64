@@ -6,6 +6,23 @@ commit, build flags, and md5. Rollback ROMs live in
 them, named `<version>_<md5>.tape` — a tape verifies ONLY the exact ROM that
 recorded it (sim is ROM-layout-sensitive; see HARNESS_NOTES.md).
 
+## v59 — 2026-07-13 — JOINER SEES THE LAKITU COUNTDOWN LIGHTS
+- commit: version-bump cut — after 2e819c79a (joiner-Lakitu fix)
+- product ROM: md5 118925cd (`releases/v59_product_118925cd.z64`)
+- FIXES: in single-screen online the countdown Lakitu was drawn only for slot 0
+  (the HOST's kart), so the joiner — whose local chase-cam follows its OWN kart —
+  saw Lakitu off-screen ("Lakitu only shows up to the host"). render_lakitu now
+  re-anchors the DRAW position to the local kart on the joiner (render-only; sim
+  object + deterministic light state untouched). Host/offline unchanged.
+- gates: harness8 = ALL 8 INSTANCES IDENTICAL (determinism preserved); live
+  2-instance capture shows the light in front of each player's own kart; a poke
+  confirmed the re-anchor engages on the joiner (local slot 1). xsmoke DEFERRED
+  (balthazar offline); render-only change, transport unchanged from v58.
+- NOTE: the branch also carries in-progress online-BATTLE work (barrier + 1P
+  spawn/camera + diagnostics). All of it is INERT in product — battle can't be
+  selected (online is always GRAND_PRIX unless the test-only gNetTestBattle poke
+  is set), so v59 is functionally v58 + the joiner-Lakitu fix.
+
 ## v58 — 2026-07-12 — QUIT NO LONGER FREEZES THE HOST
 - commit: (tagged `v58`) — after 69b3ff69c
 - product ROM: md5 4d57b42f (`releases/v58_product_4d57b42f.z64`)
