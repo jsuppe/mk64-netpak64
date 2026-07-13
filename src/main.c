@@ -686,6 +686,7 @@ void race_logic_loop(void) {
             net_render_cull_diag(); /* TEMP: drawn-chunk vs kart-section telemetry */
             net_autodrive_overlay(); /* test builds: show the AI's injected inputs */
             net_spectate_overlay(); /* replay viewer: "SPECTATING <kart> <view>" */
+            net_pause_overlay(); /* online pause: local menu, sim keeps running */
             if (!gEnableDebugMode) {
                 D_800DC514 = false;
             } else {

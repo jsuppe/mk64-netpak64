@@ -1738,6 +1738,18 @@ void course_select_menu_act(struct Controller* arg0, u16 controllerIdx) {
                 btnAndStick &= ~B_BUTTON;
                 if (gSubMenuSelection == SUB_MENU_MAP_SELECT_OK) {
                     static s32 sCourseTx;
+                    { /* dismat course override (GDB-pokeable, test-harness): force
+                       * the room onto a specific track — per-course determinism
+                       * sweeps; found via the Toad's Turnpike desyncs (course 10,
+                       * frames 864/1488, NO pause involved). */
+                        extern u32 gNetTestCourse;
+                        if (gNetTestCourse != 0 && gNetTestCourse < 0x14) {
+                            gCurrentCourseId = (s16) gNetTestCourse;
+                            gCupSelection = gCupSelectionByCourseId[gCurrentCourseId];
+                            D_800DC540 = gCupSelection;
+                            gCourseIndexInCup = 0;
+                        }
+                    }
                     if ((sCourseTx++ & 31) == 0) {
                         net_menu_send_course(gCurrentCourseId); /* repeat-safe */
                     }
