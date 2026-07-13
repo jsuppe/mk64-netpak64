@@ -556,6 +556,37 @@ void spawn_players_gp_one_player(f32* arg0, f32* arg1, f32 arg2) {
     func_80039AE4();
 }
 
+/* NetPak64 ONLINE BATTLE (single-screen): spawn all 8 slots as battle
+ * participants. Mirrors the split-screen battle spawns — NO PLAYER_STAGING
+ * (battle karts are not held+dropped by Lakitu; the GP-1P spawn's staging kart
+ * hangs func_8002D268 in the battle render path) and NO +250 drop offset — but
+ * keeps the online character sync + 8-kart ring the netcode drives. spawn_player
+ * hands each kart its balloons because gModeSelection == BATTLE. func_80039AE4
+ * sets the HUD region, like every battle spawn. */
+void spawn_players_online_battle(f32* arg0, f32* arg1, f32 arg2) {
+    extern bool net_menu_take_synced_chars(s8*, s16*);
+    func_80039DA4();
+    net_menu_take_synced_chars(&gCharacterSelections[0], cpu_chooseCharacters);
+    spawn_player(gPlayerOneCopy, 0, arg0[0], arg1[0], arg2, 32768.0f, gCharacterSelections[0],
+                 PLAYER_EXISTS | PLAYER_START_SEQUENCE | PLAYER_HUMAN);
+    spawn_player(gPlayerTwo, 1, arg0[1], arg1[1], arg2, 32768.0f, cpu_chooseCharacters[0],
+                 PLAYER_EXISTS | PLAYER_START_SEQUENCE | PLAYER_CPU);
+    spawn_player(gPlayerThree, 2, arg0[2], arg1[2], arg2, 32768.0f, cpu_chooseCharacters[1],
+                 PLAYER_EXISTS | PLAYER_START_SEQUENCE | PLAYER_CPU);
+    spawn_player(gPlayerFour, 3, arg0[3], arg1[3], arg2, 32768.0f, cpu_chooseCharacters[2],
+                 PLAYER_EXISTS | PLAYER_START_SEQUENCE | PLAYER_CPU);
+    spawn_player(gPlayerFive, 4, arg0[4], arg1[4], arg2, 32768.0f, cpu_chooseCharacters[3],
+                 PLAYER_EXISTS | PLAYER_START_SEQUENCE | PLAYER_CPU);
+    spawn_player(gPlayerSix, 5, arg0[5], arg1[5], arg2, 32768.0f, cpu_chooseCharacters[4],
+                 PLAYER_EXISTS | PLAYER_START_SEQUENCE | PLAYER_CPU);
+    spawn_player(gPlayerSeven, 6, arg0[6], arg1[6], arg2, 32768.0f, cpu_chooseCharacters[5],
+                 PLAYER_EXISTS | PLAYER_START_SEQUENCE | PLAYER_CPU);
+    spawn_player(gPlayerEight, 7, arg0[7], arg1[7], arg2, 32768.0f, cpu_chooseCharacters[6],
+                 PLAYER_EXISTS | PLAYER_START_SEQUENCE | PLAYER_CPU);
+    D_80164A28 = 0;
+    func_80039AE4();
+}
+
 void spawn_players_versus_one_player(f32* arg0, f32* arg1, f32 arg2) {
     spawn_player(gPlayerFour, 3, arg0[2], arg1[2], arg2, 32768.0f, gCharacterSelections[0],
                  PLAYER_START_SEQUENCE | PLAYER_CPU);
@@ -1100,19 +1131,26 @@ void func_8003C0F0(void) {
             switch (gActiveScreenMode) {
                 case SCREEN_MODE_1P:
                     /* NetPak64 ONLINE BATTLE: vanilla never runs battle in 1P
-                     * screen mode (it's always split-screen), so this spawn
-                     * path did not exist — the missing case is why solo-screen
-                     * battle spawned no karts. Place 8 karts in a ring and use
-                     * the GP-1P spawn (the netcode drives all 8). */
+                     * screen mode (it's always split-screen), so this spawn path
+                     * did not exist. Place 8 karts in a ring and use the online
+                     * battle spawn (battle kart state — no Lakitu staging — so the
+                     * kart-render path func_8002D268 doesn't hang; the netcode
+                     * drives all 8). */
+                    /* 8 karts on a true radius-575 octagon (diagonals at
+                     * 575*cos45 = 406). The split-screen battle spawns place
+                     * karts at the cardinal points at radius 575, which is on the
+                     * Big Donut drivable ring; an off-ring position leaves the
+                     * kart's collision.meshIndexZX invalid and crashes
+                     * calculate_surface_height on the next sim tick. */
                     D_80165210[0] = 0.0f;    D_80165230[0] = 575.0f;
-                    D_80165210[1] = 400.0f;  D_80165230[1] = 400.0f;
+                    D_80165210[1] = 406.0f;  D_80165230[1] = 406.0f;
                     D_80165210[2] = 575.0f;  D_80165230[2] = 0.0f;
-                    D_80165210[3] = 400.0f;  D_80165230[3] = -400.0f;
+                    D_80165210[3] = 406.0f;  D_80165230[3] = -406.0f;
                     D_80165210[4] = 0.0f;    D_80165230[4] = -575.0f;
-                    D_80165210[5] = -400.0f; D_80165230[5] = -400.0f;
+                    D_80165210[5] = -406.0f; D_80165230[5] = -406.0f;
                     D_80165210[6] = -575.0f; D_80165230[6] = 0.0f;
-                    D_80165210[7] = -400.0f; D_80165230[7] = 400.0f;
-                    spawn_players_gp_one_player(D_80165210, D_80165230, sp5A);
+                    D_80165210[7] = -406.0f; D_80165230[7] = 406.0f;
+                    spawn_players_online_battle(D_80165210, D_80165230, sp5A);
                     break;
 
                 case SCREEN_MODE_2P_SPLITSCREEN_HORIZONTAL:

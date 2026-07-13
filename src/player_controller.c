@@ -2153,12 +2153,17 @@ void func_8002D268(Player* player, UNUSED Camera* camera, s8 screenId, s8 player
     s32 sp7C = 0;
     UNUSED s32 pad4[6];
 
+#define D268MARK(s) do { extern u32 gNetTestBattle; if (gNetTestBattle && playerId == 1) netpak_debug_poke(0x53000000u | (s)); } while (0)
+    D268MARK(0x00);
     func_80027EDC(player, playerId);
     update_player_drift_duration(player);
     if ((player->type & PLAYER_HUMAN) == PLAYER_HUMAN) {
+        D268MARK(0x01);
         func_8002A79C(player, playerId);
+        D268MARK(0x02);
     }
     func_8002B830(player, playerId, screenId);
+    D268MARK(0x03);
     if (((player->type & PLAYER_HUMAN) == PLAYER_HUMAN) &&
         ((player->type & PLAYER_INVISIBLE_OR_BOMB) != PLAYER_INVISIBLE_OR_BOMB)) {
         func_8002BF4C(player, playerId);
@@ -2167,9 +2172,11 @@ void func_8002D268(Player* player, UNUSED Camera* camera, s8 screenId, s8 player
     if (((player->effects & DRIFT_OUTSIDE_EFFECT) == DRIFT_OUTSIDE_EFFECT) && (player->driftStateCounter >= 100)) {
         sp7C = 2;
     }
+    D268MARK(0x04);
     func_80037BB4(player, sp160);
     func_8002AB70(player);
     func_8002FCA8(player, playerId);
+    D268MARK(0x05);
     if (player->kartProps & BACK_UP) {
         player->unk_064[0] *= -1.0f;
         player->unk_064[2] *= -1.0f;
@@ -2220,7 +2227,9 @@ void func_8002D268(Player* player, UNUSED Camera* camera, s8 screenId, s8 player
     mtxf_transform_vec3f_mat3(sp178, player->orientationMatrix);
     gravityX += sp178[0];
     gravityZ += sp178[2];
+    D268MARK(0x06);
     func_8002C7E4(player, playerId, screenId);
+    D268MARK(0x07);
     sp184[2] = func_80030150(player, playerId);
     mtxf_transform_vec3f_mat3(sp184, player->orientationMatrix);
     newVelocity[0] = player->velocity[0];
@@ -2294,8 +2303,10 @@ void func_8002D268(Player* player, UNUSED Camera* camera, s8 screenId, s8 player
         nextY += player->kartHopVelocity;
         nextY -= 0.02f;
     }
+    D268MARK(0x08);
     actor_terrain_collision(&player->collision, player->boundingBoxSize, nextX, nextY, nextZ, player->oldPos[0],
                             player->oldPos[1], player->oldPos[2]);
+    D268MARK(0x09);
     player->unk_058 = 0.0f;
     player->unk_060 = 0.0f;
     player->unk_05C = 1.0f;
@@ -2358,20 +2369,24 @@ void func_8002D268(Player* player, UNUSED Camera* camera, s8 screenId, s8 player
         player->unk_0C2 = 0;
         player->kartHopVelocity = player->unk_0C2;
     }
+    D268MARK(0x13);
     surfaceDistance = player->collision.surfaceDistance[2];
     if (surfaceDistance <= 0.0f) {
         func_8003F46C(player, sp8C, newVelocity, sp178, &surfaceDistance, &nextX, &nextY, &nextZ);
     }
+    D268MARK(0x14);
     surfaceDistance = player->collision.surfaceDistance[0];
     if (surfaceDistance < 0.0f) {
         func_8003F734(player, sp8C, newVelocity, &surfaceDistance, &nextX, &nextY, &nextZ);
         func_8002C954(player, playerId, newVelocity);
     }
+    D268MARK(0x15);
     surfaceDistance = player->collision.surfaceDistance[1];
     if (surfaceDistance < 0.0f) {
         func_8003FBAC(player, sp8C, newVelocity, &surfaceDistance, &nextX, &nextY, &nextZ);
         func_8002C954(player, playerId, newVelocity);
     }
+    D268MARK(0x16);
     surfaceDistance = player->collision.surfaceDistance[0];
     if (surfaceDistance >= 0.0f) {
         surfaceDistance = player->collision.surfaceDistance[1];
@@ -2385,6 +2400,7 @@ void func_8002D268(Player* player, UNUSED Camera* camera, s8 screenId, s8 player
             }
         }
     }
+    D268MARK(0x17);
     if (((!(player->effects & MIDAIR_EFFECT)) && (func_802ABDB8(player->collision.meshIndexZX) != 0)) &&
         ((player->effects & TERRAIN_TUMBLE_EFFECT) != TERRAIN_TUMBLE_EFFECT)) {
         if ((!(player->lakituProps & HELD_BY_LAKITU)) || (!(player->lakituProps & LAKITU_SCENE))) {
@@ -2394,15 +2410,26 @@ void func_8002D268(Player* player, UNUSED Camera* camera, s8 screenId, s8 player
                (player->effects & TERRAIN_TUMBLE_EFFECT)) {
         func_8008F5A4(player, playerId);
     }
+    D268MARK(0x18);
+    { extern u32 gNetTestBattle; if (gNetTestBattle && playerId == 1) {
+        netpak_debug_poke(0x54000000u | (player->collision.meshIndexZX & 0xFFFFu)); /* the index */
+        netpak_debug_poke(0x55000000u | ((u32)(s32) player->pos[1] & 0xFFFFFFu));    /* kart Y */
+        netpak_debug_poke(0x56000000u | ((u32)(s32) nextY & 0xFFFFFFu));             /* nextY */
+    } }
     player->unk_074 = calculate_surface_height(nextX, nextY, nextZ, player->collision.meshIndexZX);
+    D268MARK(0x19);
     if (((player->type & PLAYER_HUMAN) == PLAYER_HUMAN) &&
         (((gActiveScreenMode == SCREEN_MODE_1P) || (gActiveScreenMode == SCREEN_MODE_2P_SPLITSCREEN_VERTICAL)) ||
          (gActiveScreenMode == SCREEN_MODE_2P_SPLITSCREEN_HORIZONTAL))) {
+        D268MARK(0x1A);
         func_80029B4C(player, nextX, nextY, nextZ);
+        D268MARK(0x1B);
     } else {
         func_8002A194(player, nextX, nextY, nextZ);
     }
+    D268MARK(0x1C);
     func_8002AE38(player, playerId, posX, posZ, nextX, nextZ);
+    D268MARK(0x1D);
 
     temp2 = (newVelocity[0] * newVelocity[0]) + (newVelocity[2] * newVelocity[2]);
     player->previousSpeed = player->speed;
@@ -2449,7 +2476,10 @@ void func_8002D268(Player* player, UNUSED Camera* camera, s8 screenId, s8 player
     if (player->collision.surfaceDistance[2] >= 500.0f) {
         player->unk_078 = (s16) (((s16) player->unk_078) / 2);
     }
+    D268MARK(0x1E);
     func_8002C4F8(player, playerId);
+    D268MARK(0x1F);
+#undef D268MARK
 }
 
 void func_8002E4C4(Player* player) {
