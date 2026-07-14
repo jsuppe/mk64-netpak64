@@ -4820,6 +4820,10 @@ void handle_a_press_for_all_players_during_race(void) {
         case SCREEN_MODE_1P:
             switch (gModeSelection) {
                 case GRAND_PRIX:
+                case BATTLE: /* NetPak64 online battle: drive slot 0 (the host's
+                              * kart) just like GP — vanilla never ran 1P battle,
+                              * so slot 0 got no accel input and the host couldn't
+                              * move. Slots 1+ come from net_lockstep_drive_humans. */
                     handle_a_press_for_player_during_race(gPlayerOne, gControllerOne, 0);
                     return;
                 case TIME_TRIALS:
