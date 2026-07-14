@@ -1533,6 +1533,7 @@ static u8      sCamSimArr[0x4E0];         /* sim's copy of the same region, save
     when the host banks", turning angles more extreme). Same isolation pattern
     as sCamLoc1/sCamLocD300; sim's copy still restored by cam_pop. */
 static bool    sCamLocArrInit;
+static bool    sCamBattleSeeded;          /* battle joiner: intro→chase tuning re-seed done? (reset per race) */
 static u32     sCamFollowFrame = 0xFFFFFFFF; /* sLsFrame at the last local
     follow step — the follow must integrate at SIM rate. It used to run every
     RENDER iteration: on a joiner the render keeps going through the
@@ -1739,6 +1740,7 @@ static void net_lockstep_reset(void) {
     gNetProbeAnchors[2] = sCamLocArr;
     gNetProbeAnchors[3] = &sCamActive;
     sCamLocArrInit = false;
+    sCamBattleSeeded = false;
     sLsStall = false;
     sLsStallCount = 0;
     sBlkApplied = false;
@@ -3039,6 +3041,25 @@ void net_lockstep_tick(void) {
                 }
                 netpak_debug_poke(0x76000000u | (df & 0xFFFFFFu));
                 netpak_debug_poke(0x77000000u | (h & 0xFFFFFFu));
+                {
+                    /* Per-kart sub-hash localization for online battle. The
+                     * combined hash tells us THAT the sim split but not WHICH
+                     * kart; the relay logs these pokes, so we can diff node 0 vs
+                     * node 1 at the desync df and see if it was the host's kart
+                     * (slot 0), the joiner's own kart (slot 1), or another —
+                     * the key next clue for the console-only battle desync.
+                     * Tag 0x78, payload = (kart<<20)|(sub-hash low 20 bits). */
+                    extern s32 gModeSelection;
+                    if (net_menu_online_active() && gModeSelection == BATTLE) {
+                        s32 ki;
+                        for (ki = 0; ki < NUM_PLAYERS; ki++) {
+                            if (gPlayers[ki].type & PLAYER_EXISTS) {
+                                netpak_debug_poke(0x78000000u | ((u32) ki << 20) |
+                                                  (khRow[ki] & 0xFFFFFu));
+                            }
+                        }
+                    }
+                }
 #if NET_MENU_TEST
                 if (df < 4) { /* BATTLE probe: mode + balloon counts at start */
                     extern s32 gModeSelection;
@@ -3584,6 +3605,20 @@ void net_lockstep_cam_push(void) {
          * camera altitude ("flying like lakitu", v41 on-device report). The
          * sim's chase-ready values are in sCamArrSave (saved this same push,
          * before the swap); adopt them once, then stay isolated. */
+        memcpy(sCamLocArr, sCamSimArr, sizeof(sCamLocArr));
+        memcpy(D_801645D0, sCamLocArr, sizeof(sCamLocArr));
+    }
+    /* Battle joiner: same intro→chase tuning re-seed as GP, but battle runs
+     * camera mode 9 (func_8001EE98 forces D_80152300[0]=9 every frame — never
+     * the 8→1 transition above), so the joiner's isolated camera kept the
+     * intro-flyover altitude/zoom from the first-frame seed. That is the wide,
+     * high, "flying speedboat" view whose turns read as drift. Adopt the sim's
+     * chase-ready tuning once, when the local kart starts racing. */
+    if ((D_80152300[0] == 9) && !sCamBattleSeeded &&
+        !(gPlayers[view].type & (PLAYER_STAGING | PLAYER_START_SEQUENCE))) {
+        sCamBattleSeeded = true;
+        camera1->rot[1] = gPlayers[view].rotation[1];
+        camera1->unk_2C = gPlayers[view].rotation[1];
         memcpy(sCamLocArr, sCamSimArr, sizeof(sCamLocArr));
         memcpy(D_801645D0, sCamLocArr, sizeof(sCamLocArr));
     }
