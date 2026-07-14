@@ -3055,25 +3055,11 @@ void net_lockstep_tick(void) {
                 }
                 netpak_debug_poke(0x76000000u | (df & 0xFFFFFFu));
                 netpak_debug_poke(0x77000000u | (h & 0xFFFFFFu));
-                {
-                    /* Per-kart sub-hash localization for online battle. The
-                     * combined hash tells us THAT the sim split but not WHICH
-                     * kart; the relay logs these pokes, so we can diff node 0 vs
-                     * node 1 at the desync df and see if it was the host's kart
-                     * (slot 0), the joiner's own kart (slot 1), or another —
-                     * the key next clue for the console-only battle desync.
-                     * Tag 0x78, payload = (kart<<20)|(sub-hash low 20 bits). */
-                    extern s32 gModeSelection;
-                    if (net_menu_online_active() && gModeSelection == BATTLE) {
-                        s32 ki;
-                        for (ki = 0; ki < NUM_PLAYERS; ki++) {
-                            if (gPlayers[ki].type & PLAYER_EXISTS) {
-                                netpak_debug_poke(0x78000000u | ((u32) ki << 20) |
-                                                  (khRow[ki] & 0xFFFFFu));
-                            }
-                        }
-                    }
-                }
+                /* NOTE: the old continuous per-kart 0x78 stream was removed — it
+                 * flooded the 16-entry diag ring so the one-shot 0x7C/0x7D at the
+                 * desync frame got evicted before uplink, AND its per-frame sample
+                 * never lined up across consoles. Per-kart localization now rides
+                 * the one-shot 0x7C poke at the desync latch (see sLsKHash). */
 #if NET_MENU_TEST
                 if (df < 4) { /* BATTLE probe: mode + balloon counts at start */
                     extern s32 gModeSelection;
@@ -4017,8 +4003,11 @@ static u32 sDiagStallSample;
  * stall ticks (0x68) are sampled 1-in-32 so a long stall still shows up. */
 void net_diag_poke_mirror(u32 v) {
     u32 tag = v >> 24;
-    if (tag == 0x76 || tag == 0x77 || (tag >= 0xE8 && tag <= 0xEB) ||
-        tag == 0xF6 || tag == 0xDD) {
+    /* Drop the per-frame hash streams — validation A (0x74/0x75) and B (0x76/0x77)
+     * both fire ~60/s and flooded the 16-entry ring, evicting rare one-shot
+     * events (the desync breakdown 0x7C/0x7D) before they could uplink. */
+    if (tag == 0x74 || tag == 0x75 || tag == 0x76 || tag == 0x77 ||
+        (tag >= 0xE8 && tag <= 0xEB) || tag == 0xF6 || tag == 0xDD) {
         return;
     }
     if (tag == 0x68) {
