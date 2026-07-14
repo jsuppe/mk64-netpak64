@@ -6,6 +6,20 @@ commit, build flags, and md5. Rollback ROMs live in
 them, named `<version>_<md5>.tape` — a tape verifies ONLY the exact ROM that
 recorded it (sim is ROM-layout-sensitive; see HARNESS_NOTES.md).
 
+## v69 — 2026-07-14 — diag: fix uplink so the desync breakdown actually reaches the relay
+- commit: version-bump cut — after (uplink flood fix)
+- product ROM: md5 be496a13 (`releases/v69_product_be496a13.z64`)
+- v68's per-kart-at-desync poke (0x7C) never reached the relay (game RAZVEK, frame
+  1040) — nor did the desync marker 0x7D — though the red square DID appear. The
+  diag uplink mirror has only a 16-entry ring and dropped just 0x76/0x77, so
+  validation-A 0x74/0x75 (~60/s) + the continuous 0x78 stream flooded it and
+  evicted the rare one-shot 0x7C/0x7D before drain. Fix: exclude 0x74/0x75 from the
+  mirror and remove the continuous 0x78 stream; the 9-poke desync burst now
+  survives to uplink. Diagnostic plumbing only; harness8 8/8 (153f).
+- NEXT: user plays v69 to a red square -> the 0x7C breakdown finally reaches the
+  relay -> diff node A vs node B to name the diverging kart.
+- refreshed mk64_netpak_human.z64 -> 69.
+
 ## v68 — 2026-07-14 — diag: localize desyncs to the exact kart
 - commit: version-bump cut — after (per-kart-at-desync poke)
 - product ROM: md5 cb4dac42 (`releases/v68_product_cb4dac42.z64`)
