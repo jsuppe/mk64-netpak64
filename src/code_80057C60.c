@@ -1023,7 +1023,13 @@ void func_80058F78(void) {
             draw_item_window(PLAYER_ONE);
             if (D_801657E4 != 2) {
                 render_hud_timer(PLAYER_ONE);
-                draw_simplified_lap_count(PLAYER_ONE);
+                /* Battle has no laps: the split-screen HUD paths guard this
+                 * (draw_simplified_hud :1167, render_hud_lap_3p_4p :1193) but
+                 * the 1P path did not, so online battle drew a bogus "LAP 1/3".
+                 * Remaining balloons show as the in-world balloons on each kart. */
+                if (gModeSelection != BATTLE) {
+                    draw_simplified_lap_count(PLAYER_ONE);
+                }
                 func_8004EB38(0);
                 if (D_801657E6 != false) {
                     func_8004ED40(0);

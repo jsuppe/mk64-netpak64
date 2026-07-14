@@ -19,6 +19,7 @@
 #include "audio/external.h"
 #include "race_logic.h"
 #include "skybox_and_splitscreen.h"
+#include "net_menu.h"
 #include "math_util_2.h"
 #include "effects.h"
 #include "math.h"
@@ -68,6 +69,22 @@ void func_8028DF38(void) {
 }
 
 void func_8028E028(void) {
+    /* Online battle end. The vanilla results flow (D_800DC510=5 -> func_8028E438
+     * -> func_80092604) spawns the battle-results menu, which indexes
+     * D_800E7300[(gPlayerCount-2)*4] and hard-loops in find_menu_items_dupe
+     * (while(true){;}) on a missing item type. The 1P online setup runs with
+     * gPlayerCount==1, so (1-2)*4 = -4 is an OOB read the menu never recovers
+     * from -> both consoles freeze (exactly the "perspective shifted then
+     * froze" report). Skip the whole results flow and cleanly leave to the menu
+     * via the proven online-quit path. Deterministic: every console reaches
+     * aliveCounter<=1 at the same sim frame from the shared balloon counts. */
+    if (net_menu_online_active() && gModeSelection == BATTLE) {
+        extern void netpak_session_leave(void);
+        net_menu_online_end();   /* disengage the in-race lockstep gate */
+        netpak_session_leave();  /* leave the room */
+        func_8028FBD4();         /* fade out -> START_MENU */
+        return;
+    }
 
     switch (gPlayerCountSelection1) {
         case 2:
@@ -88,12 +105,18 @@ void func_8028E028(void) {
 void update_player_battle_status(void) {
     Player* player;
     s32 playerIndex;
-    s16 playersAlive[4];
-    s16 playersDead[4];
+    s16 playersAlive[8];
+    s16 playersDead[8];
     s16 aliveCounter = 0;
     s16 deadCounter = 0;
+    /* Vanilla battle is 2-4 players (slots 0-3). Online battle seats up to 8
+     * humans (slots 0-7), so count every slot or a survivor in 4-7 would never
+     * win and the battle would never end. func_8028E028's online-battle path
+     * (net-menu return-to-menu) doesn't index the [4] region array by winner,
+     * so an index in 4-7 is safe here. */
+    s32 nslots = (net_menu_online_active() && gModeSelection == BATTLE) ? 8 : 4;
 
-    for (playerIndex = 0; playerIndex < 4; playerIndex++) {
+    for (playerIndex = 0; playerIndex < nslots; playerIndex++) {
         player = &gPlayers[playerIndex];
         if (!(player->type & PLAYER_EXISTS)) {
             continue;

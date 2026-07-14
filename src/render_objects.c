@@ -2479,7 +2479,18 @@ void draw_minimap_character(s32 arg0, s32 playerId, s32 characterId) {
         y = ((gMiniMapFinishLineY[arg0] + D_8018D2F8) - (D_8018D2B8 / 2)) + gMiniMapY + (s16)(thing1);
         // huh?
         if (characterId != 8) {
-            if ((gGPCurrentRaceRankByPlayerId[playerId] == 0) && (gModeSelection != 3) && (gModeSelection != 1)) {
+            s32 highlight = (gGPCurrentRaceRankByPlayerId[playerId] == 0) && (gModeSelection != 3) && (gModeSelection != 1);
+            /* Online battle disables the vanilla rank-0 highlight (gModeSelection
+             * != 3), so no blip is "me". Mark the local kart so the joiner can
+             * tell which dot it drives. */
+            if (gModeSelection == BATTLE) {
+                extern s32 net_menu_online_active(void);
+                extern s32 net_lockstep_local_slot(void);
+                if (net_menu_online_active() && playerId == net_lockstep_local_slot()) {
+                    highlight = 1;
+                }
+            }
+            if (highlight) {
                 func_80046424(x, y, player->rotation[1] + DEGREES(180), 1.0f, (u8*)&common_texture_minimap_kart_mario[characterId * 64], common_vtx_player_minimap_icon, 8, 8, 8, 8);
             } else {
                 func_800463B0(x, y, player->rotation[1] + DEGREES(180), 1.0f, (u8*)&common_texture_minimap_kart_mario[characterId * 64], common_vtx_player_minimap_icon, 8, 8, 8, 8);
@@ -2529,13 +2540,23 @@ void func_8004F3E4(s32 arg0) {
                 draw_minimap_character(arg0, playerId, (gPlayerOne + playerId)->characterId);
             }
             break;
-        case BATTLE:
-            for (idx = 0; idx < gPlayerCountSelection1; idx++) {
+        case BATTLE: {
+            extern s32 net_menu_online_active(void);
+            /* Online battle seats humans in slots 0..np-1 (fillers after), but
+             * gPlayerCountSelection1 is the 1P screen's count (1), so the vanilla
+             * loop drew only slot 0 and the joiner never saw its own blip move.
+             * Draw every existing kart instead. */
+            s32 n = net_menu_online_active() ? NUM_PLAYERS : gPlayerCountSelection1;
+            for (idx = 0; idx < n; idx++) {
+                if (net_menu_online_active() && !((gPlayerOne + idx)->type & PLAYER_EXISTS)) {
+                    continue;
+                }
                 if (!((gPlayerOne + idx)->type & PLAYER_UNKNOWN_0x40)) {
                     draw_minimap_character(arg0, idx, (gPlayerOne + idx)->characterId);
                 }
             }
             break;
+        }
     }
 }
 
