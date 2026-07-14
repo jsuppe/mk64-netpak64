@@ -79,12 +79,17 @@ void func_8028E028(void) {
      * via the proven online-quit path. Deterministic: every console reaches
      * aliveCounter<=1 at the same sim frame from the shared balloon counts. */
     if (net_menu_online_active() && gModeSelection == BATTLE) {
-        extern void netpak_session_leave(void);
         extern void netpak_debug_poke(u32);
-        netpak_debug_poke(0x79000000u | ((u32) gPlayerWinningIndex & 0xFFu)); /* battle-end intercept fired (relay-visible: still online) */
+        netpak_debug_poke(0x79000000u | ((u32) gPlayerWinningIndex & 0xFFu)); /* battle-end intercept fired */
         net_menu_online_end();   /* disengage the in-race lockstep gate */
-        netpak_session_leave();  /* leave the room */
         func_8028FBD4();         /* fade out -> START_MENU */
+        /* session_leave DEFERRED: it tore down the netpak session mid-transition,
+         * which (a) killed the diag uplink so the post-end path was invisible and
+         * (b) is the prime suspect for the black-screen stall — the GP pause-quit
+         * uses the same calls but from a different context and returns to the menu
+         * fine. Leaving the room stays alive here; the menu re-entry / next reset
+         * cleans it up. Keeping it also lets the wedge beacon report the
+         * gamestate after the fade so a residual hang is finally observable. */
         return;
     }
 
