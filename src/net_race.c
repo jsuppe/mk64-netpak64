@@ -3025,6 +3025,18 @@ void net_lockstep_tick(void) {
                     }
 #endif
                 }
+                /* Fold the sim RNG seed into the frame hash. None of the 8
+                 * per-kart fields carry it, so an RNG-stream divergence
+                 * (e.g. battle balloon jitter consuming random_int a different
+                 * number of times per console) stays invisible until it leaks
+                 * into pos/speed/effects hundreds of frames later — the
+                 * mid-game battle desync. Hashing the seed makes the detector
+                 * fail on the exact frame the streams split. */
+                {
+                    extern u16 gRandomSeed16;
+                    h ^= (u32) gRandomSeed16;
+                    h *= 16777619u;
+                }
                 netpak_debug_poke(0x76000000u | (df & 0xFFFFFFu));
                 netpak_debug_poke(0x77000000u | (h & 0xFFFFFFu));
 #if NET_MENU_TEST
@@ -4115,6 +4127,11 @@ void net_race_frame(void) {
                 h ^= f[fi];
                 h *= 16777619u;
             }
+        }
+        { /* seed in the hash — see validation B */
+            extern u16 gRandomSeed16;
+            h ^= (u32) gRandomSeed16;
+            h *= 16777619u;
         }
         netpak_debug_poke(0x76000000u | ((u32) sRaceFrames & 0xFFFFFFu));
         netpak_debug_poke(0x77000000u | (h & 0xFFFFFFu));

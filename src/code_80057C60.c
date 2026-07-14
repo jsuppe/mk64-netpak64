@@ -6964,7 +6964,24 @@ void func_8006E420(Player* player, s8 playerIndex, s8 arg2) {
         }
 
         if (gModeSelection == BATTLE) {
+            /* update_player_one_balloon_position calls random_int for cosmetic
+             * balloon jitter, which mutates gRandomSeed16 — the SHARED sim RNG
+             * that lockstep snapshots into sLsSimSeed and carries to the next
+             * sim frame. The balloon float accumulators that gate those
+             * random_int calls are neither hashed nor synced, so a sub-hash
+             * per-console difference changes how many times random_int fires
+             * this frame → the sim seed diverges → item rolls and physics split
+             * hundreds of frames later (the mid-game online-battle desync,
+             * invisible to the 0x76/0x77 hash). For online, let the jitter run
+             * (cosmetic) but restore the seed so it never advances the shared
+             * stream. Offline keeps vanilla behaviour. */
+            extern u16 gRandomSeed16;
+            extern s32 net_menu_online_active(void);
+            u16 savedSeed = gRandomSeed16;
             update_player_balloons_position(player, playerIndex);
+            if (net_menu_online_active()) {
+                gRandomSeed16 = savedSeed;
+            }
         }
     }
 }
