@@ -6,6 +6,29 @@ commit, build flags, and md5. Rollback ROMs live in
 them, named `<version>_<md5>.tape` — a tape verifies ONLY the exact ROM that
 recorded it (sim is ROM-layout-sensitive; see HARNESS_NOTES.md).
 
+## v61 — 2026-07-13 — ONLINE BATTLE IS PLAYABLE 🎉
+- commit: version-bump cut — after a42c4e205 (all-arenas + crash-proof spawn)
+- product ROM: md5 9b28a800 (`releases/v61_product_9b28a800.z64`)
+- ADDS: online single-screen BATTLE now RUNS. The launch crash is fixed — karts
+  were spawning below the platform because spawn_players_online_battle used the
+  UNINITIALIZED sp5A as the Y (func_8003C0F0 sets it only for racing courses);
+  get_surface_height treated it as a downward ceiling and returned the -3000
+  default -> off-mesh -> calculate_surface_height OOB. Now the spawn Y is derived
+  from the arena surface, and each kart's position is validated (off-stage ->
+  fall back to a known-good ring point), so no kart spawns off-mesh on any arena.
+- FLOW: SELECT CLASS -> BATTLE -> host picks the arena on the vanilla battle
+  course screen -> synchronized launch -> a real battle (balloons, minimap, each
+  player sees their own kart). All 4 arenas selectable.
+- gates: battleprobe = sim runs 1600+ frames, D_800DC510 0->1->2->3 (RACING), 0
+  desync (bit-identical). harness8 = all 8 identical (GP untouched). xsmoke
+  DEFERRED (balthazar offline).
+- STATE: Big Donut is well-tuned and fully playable. Block Fort / Skyscraper /
+  Double Deck run without crashing but may cluster karts where the octagon falls
+  off-stage (per-arena position tuning is follow-up). HUD still shows LAP 1/3
+  (GP HUD) not a balloon count. Victory (last kart standing) over 8 slots not yet
+  verified. In-tree diagnostic markers (0x50-0x56) still present (gated, inert).
+- also: refreshed mk64_netpak_human.z64 (balthazar cross-machine ROM) to 61.
+
 ## v60 — 2026-07-13 — HOST CAN PICK BATTLE + ARENA (menu flow)
 - commit: version-bump cut — after e550f8611 (battle course-select refactor)
 - product ROM: md5 567408ab (`releases/v60_product_567408ab.z64`)
