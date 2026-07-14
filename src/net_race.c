@@ -3644,7 +3644,32 @@ void net_lockstep_cam_push(void) {
         if (spec && D_80152300[0] == 3) {
             D_80152300[0] = 1; /* leaving cinematic: back to chase */
         }
-        func_8001EE98(&gPlayers[view], camera1, 0);
+        {
+            /* Force the chase-cam's yaw-tracking (pan) branch. func_8001E45C /
+             * func_8001EA0C FREEZE the camera yaw (unk_2C stops integrating —
+             * so panning stops while position still follows player->pos) whenever
+             * the followed kart has a spin-out effect OR
+             * collision.surfaceDistance[0]/[1] <= 0. The joiner's local kart reads
+             * non-positive wall distances here, so its camera never panned with
+             * turns — the "speedboat drift" (GP + battle). Feed the follow
+             * positive distances so it always integrates yaw toward the kart
+             * heading, then restore (render-only; the sim recomputes collision
+             * next tick regardless). */
+            f32 sd0 = gPlayers[view].collision.surfaceDistance[0];
+            f32 sd1 = gPlayers[view].collision.surfaceDistance[1];
+            static u32 sCamDbg;
+            if ((sCamDbg++ % 30) == 0) { /* ~1/s: confirm the freeze trigger */
+                u32 e = (u32) gPlayers[view].effects;
+                netpak_debug_poke(0x5A000000u |
+                                  ((sd0 <= 0.0f) ? 0x1u : 0u) | ((sd1 <= 0.0f) ? 0x2u : 0u) |
+                                  ((e & 0x80000u) ? 0x4u : 0u) | ((e & 0x800000u) ? 0x8u : 0u));
+            }
+            if (sd0 <= 0.0f) { gPlayers[view].collision.surfaceDistance[0] = 100.0f; }
+            if (sd1 <= 0.0f) { gPlayers[view].collision.surfaceDistance[1] = 100.0f; }
+            func_8001EE98(&gPlayers[view], camera1, 0);
+            gPlayers[view].collision.surfaceDistance[0] = sd0;
+            gPlayers[view].collision.surfaceDistance[1] = sd1;
+        }
     } else if (gNetSpecView == SPEC_VIEW_LAKITU) {
         /* Lakitu's rescue camera, raised and pulled back for a hovering
          * rear view (raw E8E8 sits at bumper height, too close) */
