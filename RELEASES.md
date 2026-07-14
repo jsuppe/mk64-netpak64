@@ -6,6 +6,30 @@ commit, build flags, and md5. Rollback ROMs live in
 them, named `<version>_<md5>.tape` — a tape verifies ONLY the exact ROM that
 recorded it (sim is ROM-layout-sensitive; see HARNESS_NOTES.md).
 
+## v70 — 2026-07-14 — camera: fix joiner "speedboat" pan + battle-end: keep session alive
+- commit: version-bump cut — after (camera pan fix + battle-end session-leave removal)
+- product ROM: md5 21bf052a (`releases/v70_product_21bf052a.z64`)
+- CAMERA (joiner "speedboat drift", GP + battle): the chase follow (func_8001E45C/
+  func_8001EA0C) freezes the camera yaw (unk_2C, so no panning) whenever the
+  followed kart has a spin-out effect OR collision.surfaceDistance[0]/[1] <= 0 —
+  but func_8001CCEC still translates by player->pos, so position follows while yaw
+  sticks at a fixed world angle. The joiner's local kart persistently reads
+  non-positive wall distances, so its camera took that branch every frame. FIX:
+  feed the joiner's render-side follow positive surfaceDistance so it always pans,
+  restore immediately (render-only, sim untouched). v65 fixed altitude; this fixes
+  pan. A ~1/s 0x5A poke reports the trigger in case a residual freeze is effect-
+  driven.
+- BATTLE-END black screen: v69 relay proved the end-intercept fires and both
+  consoles leave IN SYNC — the failure is only the post-fade menu transition.
+  netpak_session_leave in the intercept both killed the diag uplink (hiding the
+  hang) and is the prime suspect for the stall (GP quit uses the same calls sans
+  the mid-transition teardown and works). Removed session_leave from the
+  battle-end; the room stays alive (cleaned on menu re-entry). May fix the black
+  screen; if not, the wedge beacon now survives to report the stuck gamestate.
+- Verified: harness8 8/8 (153f); 2p battleprobe 1177f 0 desync.
+- STILL OPEN: cross-machine desync (unseen last 2 games, 0x7C localizer armed).
+- refreshed mk64_netpak_human.z64 -> 70.
+
 ## v69 — 2026-07-14 — diag: fix uplink so the desync breakdown actually reaches the relay
 - commit: version-bump cut — after (uplink flood fix)
 - product ROM: md5 be496a13 (`releases/v69_product_be496a13.z64`)
