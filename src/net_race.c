@@ -1443,6 +1443,9 @@ static u16  sBlkTicks;    /* host: resend window age */
 #define LS_HASHRING 64
 static u32  sLsHashFrame[LS_HASHRING];
 static u32  sLsHashVal[LS_HASHRING];
+static u32  sLsKHash[LS_HASHRING][NUM_PLAYERS]; /* per-kart sub-hashes, so a desync
+    can name WHICH kart split: both consoles poke their own breakdown for the
+    desync frame (0x7C), one-shot, and the relay diff localizes it. */
 static u32  sLsHashLastDf; /* dedupe: store/broadcast each df once (first eval) */
 static u32  sLsDesyncFrame; /* first mismatching frame (0 = none) */
 static bool sLsDesync;
@@ -2518,9 +2521,20 @@ void net_lockstep_tick(void) {
 #endif
             if (!sLsDesync && sLsHashFrame[hm->frame % LS_HASHRING] == hm->frame &&
                 sLsHashVal[hm->frame % LS_HASHRING] != hm->hash) {
+                s32 ki;
+                u32 ri = hm->frame % LS_HASHRING;
                 sLsDesync = true;
                 sLsDesyncFrame = hm->frame;
                 netpak_debug_poke(0x7D000000u | (hm->frame & 0xFFFFFFu));
+                /* One-shot: poke THIS console's per-kart sub-hashes for the
+                 * desync frame. The peer does the same, so diffing node A's vs
+                 * node B's 0x7C pokes names the kart(s) that split — the thing
+                 * the throttled continuous 0x78 stream can't (nodes sample
+                 * different frames). Rare event, so it survives the uplink. */
+                for (ki = 0; ki < NUM_PLAYERS; ki++) {
+                    netpak_debug_poke(0x7C000000u | ((u32) ki << 20) |
+                                      (sLsKHash[ri][ki] & 0xFFFFFu));
+                }
             }
             continue;
         }
@@ -3125,6 +3139,12 @@ void net_lockstep_tick(void) {
 #endif
                 sLsHashFrame[df % LS_HASHRING] = df;
                 sLsHashVal[df % LS_HASHRING] = h;
+                {   /* stash this frame's per-kart breakdown for desync localization */
+                    s32 ki;
+                    for (ki = 0; ki < NUM_PLAYERS; ki++) {
+                        sLsKHash[df % LS_HASHRING][ki] = khRow[ki];
+                    }
+                }
                 if ((df & 15) == 0) {
 #if NET_DIAG
                     u32 hk = df >> 4;
