@@ -1455,7 +1455,12 @@ typedef struct {
     u16 pad2;
     u32 frame;
     u32 hash;
-} LsHashMsg; /* 12 bytes */
+    u16 khash[NUM_PLAYERS]; /* per-kart sub-hash (low 16b). The receiver diffs
+        these against its own on a combined-hash mismatch and pokes ONE bitmask
+        of the diverging karts (0x5B) — definitive localization in a single poke,
+        so the throttled uplink can't lose the per-kart detail. Relay reads only
+        [4..12] (frame,hash) so the extra bytes are ignored by old infra. */
+} LsHashMsg; /* 28 bytes */
 #define LSHASH_TAG 0x48
 static u32  sBlkGot;
 static u32  sBlkSendPos;
@@ -2523,18 +2528,21 @@ void net_lockstep_tick(void) {
                 sLsHashVal[hm->frame % LS_HASHRING] != hm->hash) {
                 s32 ki;
                 u32 ri = hm->frame % LS_HASHRING;
+                u32 mask = 0;
                 sLsDesync = true;
                 sLsDesyncFrame = hm->frame;
                 netpak_debug_poke(0x7D000000u | (hm->frame & 0xFFFFFFu));
-                /* One-shot: poke THIS console's per-kart sub-hashes for the
-                 * desync frame. The peer does the same, so diffing node A's vs
-                 * node B's 0x7C pokes names the kart(s) that split — the thing
-                 * the throttled continuous 0x78 stream can't (nodes sample
-                 * different frames). Rare event, so it survives the uplink. */
+                /* Definitive one-poke localization: the peer's LSHASH carries its
+                 * per-kart sub-hashes, so diff them against ours for this frame
+                 * and poke a bitmask of exactly which karts diverged (0x5B, frame
+                 * low 12b << 8 | kart bitmask). A single poke survives the uplink
+                 * where the old 8-poke burst was partially evicted. */
                 for (ki = 0; ki < NUM_PLAYERS; ki++) {
-                    netpak_debug_poke(0x7C000000u | ((u32) ki << 20) |
-                                      (sLsKHash[ri][ki] & 0xFFFFFu));
+                    if ((u16) (sLsKHash[ri][ki] & 0xFFFFu) != hm->khash[ki]) {
+                        mask |= (1u << ki);
+                    }
                 }
+                netpak_debug_poke(0x5B000000u | ((hm->frame & 0xFFFu) << 8) | (mask & 0xFFu));
             }
             continue;
         }
@@ -3176,11 +3184,15 @@ void net_lockstep_tick(void) {
 #endif
                     if (!NP_REPLAYING) {
                         LsHashMsg hm;
+                        s32 kj;
                         hm.tag = LSHASH_TAG;
                         hm.pad = 0;
                         hm.pad2 = 0;
                         hm.frame = df;
                         hm.hash = h;
+                        for (kj = 0; kj < NUM_PLAYERS; kj++) {
+                            hm.khash[kj] = (u16) khRow[kj]; /* low 16b for the diff */
+                        }
                         netpak_send(NETPAK_BROADCAST, 0, &hm, sizeof(hm));
 #if NET_MENU_TEST
                         netpak_debug_poke(0xE8000000u | (df & 0xFFFFFFu)); /* hash SENT */
