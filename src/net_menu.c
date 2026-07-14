@@ -118,13 +118,30 @@ static void net_menu_check_ver(u8 pad) {
 
 enum OnlineMenuState {
     OM_MAIN,       /* HOST GAME / JOIN GAME / FIND GAME / NAME */
-    OM_HOST_CC,    /* host-only: pick 50/100/150cc before opening the room */
+    OM_HOST_CC,    /* host-only: pick 50/100/150cc or BATTLE before opening the room */
+    OM_HOST_ARENA, /* host-only: pick the battle arena (after choosing BATTLE) */
     OM_HOST_VIS,   /* host-only: PRIVATE (code-only) or PUBLIC (listed) room */
     OM_HOSTING,    /* created a room; showing code, waiting for players */
     OM_JOIN_ENTRY, /* dialing in a code */
     OM_JOINED,     /* joined a room; waiting for the host to start */
     OM_NAME_ENTRY, /* editing the player name */
     OM_FIND        /* browsing public rooms (LIST_GAMES, v47) */
+};
+
+/* Host's mode/arena pick on the SELECT CLASS screen. sClassSel is the 4-way
+ * cursor (0/1/2 = 50/100/150cc, 3 = BATTLE); sHostBattle latches on BATTLE and
+ * sHostArena holds the chosen arena course id. Battle arenas in vanilla-cup
+ * order (gCupCourseOrder[BATTLE_CUP]); net_menu.c doesn't include course.h so
+ * the ids are literals. */
+#define OM_CLASS_BATTLE 3
+static s32 sClassSel;      /* 0 50cc, 1 100cc, 2 150cc, 3 BATTLE */
+static s32 sHostBattle;    /* host chose BATTLE on the class screen */
+static s32 sArenaSel;      /* battle-arena cursor 0..3 */
+static u8  sHostArena;     /* chosen battle arena course id */
+static const u8 kBattleArenas[4] = { 0x13, 0x0F, 0x11, 0x10 }; /* Big Donut,
+                              Block Fort, Double Deck, Skyscraper */
+static const char* const kBattleArenaNames[4] = {
+    "BIG DONUT", "BLOCK FORT", "DOUBLE DECK", "SKYSCRAPER"
 };
 #define OM_MAIN_OPTIONS 4 /* HOST / JOIN / FIND / NAME */
 
@@ -239,7 +256,10 @@ static void net_menu_host_set_mode(void) {
     extern u32 gNetTestBattle; /* net_race.c; 0 unless a test build pokes it */
     sOnlineMode = GRAND_PRIX;
     sOnlineArena = 0;
-    if (gNetTestBattle) {
+    if (sHostBattle) { /* host picked BATTLE + an arena on the class screen */
+        sOnlineMode = BATTLE;
+        sOnlineArena = sHostArena;
+    } else if (gNetTestBattle) { /* test-harness override -> Big Donut */
         sOnlineMode = BATTLE;
         sOnlineArena = 0x13; /* COURSE_BIG_DONUT */
     }
@@ -1009,6 +1029,8 @@ void net_menu_update(struct Controller* controller) {
                                          * relay up so the create won't fail) */
                     if (netpak_present() && (netpak_status() & NETPAK_STATUS_LINK_UP)) {
                         sLastErr = 0;
+                        sClassSel = CC_100; /* cursor default = 100cc */
+                        sHostBattle = 0;
                         sState = OM_HOST_CC;
                         play_sound2(SOUND_MENU_SELECT);
                     }
@@ -1080,25 +1102,53 @@ void net_menu_update(struct Controller* controller) {
             break;
 
         case OM_HOST_CC:
-            /* Host's engine class for the game they are hosting (the joiners
-             * never pick — they adopt this via lobby pings + START). */
+            /* Host's game type: 50/100/150cc (Grand Prix) or BATTLE. Joiners
+             * never pick — they adopt it via lobby pings + START. */
             if (btn & (U_JPAD | L_JPAD)) {
-                sCcSel = (sCcSel + 2) % 3; /* CC_50..CC_150 wrap */
+                sClassSel = (sClassSel + 3) % 4; /* 50/100/150/BATTLE wrap */
                 play_sound2(SOUND_MENU_CURSOR_MOVE);
             }
             if (btn & (D_JPAD | R_JPAD)) {
-                sCcSel = (sCcSel + 1) % 3;
+                sClassSel = (sClassSel + 1) % 4;
                 play_sound2(SOUND_MENU_CURSOR_MOVE);
             }
             if (btn & B_BUTTON) {
                 sState = OM_MAIN;
                 play_sound2(SOUND_MENU_GO_BACK);
-            } else if (btn & A_BUTTON) { /* class locked -> visibility pick */
-                sHostPublic = 1; /* PUBLIC default: hosts on a personal relay
-                    expect FIND GAME to see their room — the private default
-                    read as "FIND GAME is broken" (2026-07-10, relay log:
-                    rooms created private, LIST empty, joiner refreshing at
-                    NO PUBLIC GAMES). PRIVATE is one D-pad press away. */
+            } else if (btn & A_BUTTON) {
+                if (sClassSel == OM_CLASS_BATTLE) { /* BATTLE -> pick an arena */
+                    sHostBattle = 1;
+                    sState = OM_HOST_ARENA;
+                    play_sound2(SOUND_MENU_BATTLE);
+                } else { /* Grand Prix class locked -> visibility pick */
+                    sHostBattle = 0;
+                    sCcSel = sClassSel; /* 0/1/2 == CC_50/CC_100/CC_150 */
+                    sHostPublic = 1; /* PUBLIC default (FIND GAME expects it);
+                        PRIVATE is one D-pad press away on the next screen. */
+                    sState = OM_HOST_VIS;
+                    play_sound2(SOUND_MENU_SELECT);
+                }
+            }
+            break;
+
+        case OM_HOST_ARENA:
+            /* Battle only: pick which arena to host. Rides START (chars[3]) so
+             * every joiner loads the same stage. */
+            if (btn & (U_JPAD | L_JPAD)) {
+                sArenaSel = (sArenaSel + 3) % 4;
+                play_sound2(SOUND_MENU_CURSOR_MOVE);
+            }
+            if (btn & (D_JPAD | R_JPAD)) {
+                sArenaSel = (sArenaSel + 1) % 4;
+                play_sound2(SOUND_MENU_CURSOR_MOVE);
+            }
+            if (btn & B_BUTTON) {
+                sHostBattle = 0;
+                sState = OM_HOST_CC; /* back to SELECT CLASS */
+                play_sound2(SOUND_MENU_GO_BACK);
+            } else if (btn & A_BUTTON) { /* arena locked -> visibility pick */
+                sHostArena = kBattleArenas[sArenaSel];
+                sHostPublic = 1;
                 sState = OM_HOST_VIS;
                 play_sound2(SOUND_MENU_SELECT);
             }
@@ -1535,14 +1585,30 @@ void net_menu_render(void) {
 
         case OM_HOST_CC:
             set_text_color(TEXT_GREEN);
-            print_text1_center_mode_1(0xA0, 0x54, "SELECT CLASS", 0, 0.8f, 0.8f);
-            draw_option(0xA0, 0x6C, "50CC", sCcSel == CC_50);
-            draw_option(0xA0, 0x80, "100CC", sCcSel == CC_100);
-            draw_option(0xA0, 0x94, "150CC", sCcSel == CC_150);
+            print_text1_center_mode_1(0xA0, 0x50, "SELECT CLASS", 0, 0.8f, 0.8f);
+            draw_option(0xA0, 0x66, "50CC", sClassSel == CC_50);
+            draw_option(0xA0, 0x78, "100CC", sClassSel == CC_100);
+            draw_option(0xA0, 0x8A, "150CC", sClassSel == CC_150);
+            draw_option(0xA0, 0x9C, "BATTLE", sClassSel == OM_CLASS_BATTLE);
             set_text_color(TEXT_YELLOW);
-            print_text1_center_mode_1(0xA0, 0xB4, "A  HOST GAME", 0, 0.7f, 0.7f);
-            print_text1_center_mode_1(0xA0, 0xC4, "B  BACK", 0, 0.7f, 0.7f);
+            print_text1_center_mode_1(0xA0, 0xB8, "A  HOST GAME", 0, 0.7f, 0.7f);
+            print_text1_center_mode_1(0xA0, 0xC6, "B  BACK", 0, 0.7f, 0.7f);
             break;
+
+        case OM_HOST_ARENA: {
+            s32 ai;
+            s32 ay = 0x66;
+            set_text_color(TEXT_GREEN);
+            print_text1_center_mode_1(0xA0, 0x50, "SELECT ARENA", 0, 0.8f, 0.8f);
+            for (ai = 0; ai < 4; ai++) {
+                draw_option(0xA0, ay, (char*) kBattleArenaNames[ai], sArenaSel == ai);
+                ay += 0x12;
+            }
+            set_text_color(TEXT_YELLOW);
+            print_text1_center_mode_1(0xA0, 0xB8, "A  HOST GAME", 0, 0.7f, 0.7f);
+            print_text1_center_mode_1(0xA0, 0xC6, "B  BACK", 0, 0.7f, 0.7f);
+            break;
+        }
 
         case OM_HOSTING:
         case OM_JOINED: {
