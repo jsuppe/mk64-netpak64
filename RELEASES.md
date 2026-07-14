@@ -6,6 +6,21 @@ commit, build flags, and md5. Rollback ROMs live in
 them, named `<version>_<md5>.tape` — a tape verifies ONLY the exact ROM that
 recorded it (sim is ROM-layout-sensitive; see HARNESS_NOTES.md).
 
+## v71 — 2026-07-14 — diag: definitive one-poke desync localization (per-kart in LSHASH)
+- commit: version-bump cut — after (LSHASH per-kart)
+- product ROM: md5 c63b220f (`releases/v71_product_c63b220f.z64`)
+- v70 desynced (game 4J5L5W, frame 944) but the 8-poke per-kart 0x7C burst STILL
+  didn't localize — too big for the 16-entry uplink ring (node 0 kept only karts
+  4-7, node 1 nothing). Redesign: the ch0 LSHASH now carries each kart's sub-hash
+  (u16 khash[8], 12->28 bytes); the console detecting the mismatch diffs the
+  peer's per-kart against its own for that frame and pokes ONE bitmask of the
+  diverging karts (0x5B, frame<<8 | kartmask). One poke survives, definitive, no
+  cross-node correlation. Relay-safe (reads only frame/hash). harness8 8/8, 2p 0
+  desync.
+- NEXT: user plays v71 to a red square -> 0x5B poke gives the exact kart bitmask.
+- Also carries v70's joiner camera pan fix + battle-end session-leave removal.
+- refreshed mk64_netpak_human.z64 -> 71.
+
 ## v70 — 2026-07-14 — camera: fix joiner "speedboat" pan + battle-end: keep session alive
 - commit: version-bump cut — after (camera pan fix + battle-end session-leave removal)
 - product ROM: md5 21bf052a (`releases/v70_product_21bf052a.z64`)
