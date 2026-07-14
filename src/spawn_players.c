@@ -565,23 +565,33 @@ void spawn_players_gp_one_player(f32* arg0, f32* arg1, f32 arg2) {
  * sets the HUD region, like every battle spawn. */
 void spawn_players_online_battle(f32* arg0, f32* arg1, f32 arg2) {
     extern bool net_menu_take_synced_chars(s8*, s16*);
+    f32 spawnY;
+    (void) arg2; /* the caller's Y (sp5A) is UNINITIALIZED for battle arenas —
+                  * func_8003C0F0 sets it only for racing courses. spawn_player
+                  * uses it as a DOWNWARD search ceiling in get_surface_height,
+                  * so a garbage-low value returns the -3000 default and the kart
+                  * spawns below the platform (off-mesh -> calculate_surface_height
+                  * crash). Derive a real ceiling from the arena surface at the
+                  * first ring position (searching from far above), so every kart
+                  * lands ON the arena. */
+    spawnY = get_surface_height(arg0[0], 30000.0f, arg1[0]) + 100.0f;
     func_80039DA4();
     net_menu_take_synced_chars(&gCharacterSelections[0], cpu_chooseCharacters);
-    spawn_player(gPlayerOneCopy, 0, arg0[0], arg1[0], arg2, 32768.0f, gCharacterSelections[0],
+    spawn_player(gPlayerOneCopy, 0, arg0[0], arg1[0], spawnY, 32768.0f, gCharacterSelections[0],
                  PLAYER_EXISTS | PLAYER_START_SEQUENCE | PLAYER_HUMAN);
-    spawn_player(gPlayerTwo, 1, arg0[1], arg1[1], arg2, 32768.0f, cpu_chooseCharacters[0],
+    spawn_player(gPlayerTwo, 1, arg0[1], arg1[1], spawnY, 32768.0f, cpu_chooseCharacters[0],
                  PLAYER_EXISTS | PLAYER_START_SEQUENCE | PLAYER_CPU);
-    spawn_player(gPlayerThree, 2, arg0[2], arg1[2], arg2, 32768.0f, cpu_chooseCharacters[1],
+    spawn_player(gPlayerThree, 2, arg0[2], arg1[2], spawnY, 32768.0f, cpu_chooseCharacters[1],
                  PLAYER_EXISTS | PLAYER_START_SEQUENCE | PLAYER_CPU);
-    spawn_player(gPlayerFour, 3, arg0[3], arg1[3], arg2, 32768.0f, cpu_chooseCharacters[2],
+    spawn_player(gPlayerFour, 3, arg0[3], arg1[3], spawnY, 32768.0f, cpu_chooseCharacters[2],
                  PLAYER_EXISTS | PLAYER_START_SEQUENCE | PLAYER_CPU);
-    spawn_player(gPlayerFive, 4, arg0[4], arg1[4], arg2, 32768.0f, cpu_chooseCharacters[3],
+    spawn_player(gPlayerFive, 4, arg0[4], arg1[4], spawnY, 32768.0f, cpu_chooseCharacters[3],
                  PLAYER_EXISTS | PLAYER_START_SEQUENCE | PLAYER_CPU);
-    spawn_player(gPlayerSix, 5, arg0[5], arg1[5], arg2, 32768.0f, cpu_chooseCharacters[4],
+    spawn_player(gPlayerSix, 5, arg0[5], arg1[5], spawnY, 32768.0f, cpu_chooseCharacters[4],
                  PLAYER_EXISTS | PLAYER_START_SEQUENCE | PLAYER_CPU);
-    spawn_player(gPlayerSeven, 6, arg0[6], arg1[6], arg2, 32768.0f, cpu_chooseCharacters[5],
+    spawn_player(gPlayerSeven, 6, arg0[6], arg1[6], spawnY, 32768.0f, cpu_chooseCharacters[5],
                  PLAYER_EXISTS | PLAYER_START_SEQUENCE | PLAYER_CPU);
-    spawn_player(gPlayerEight, 7, arg0[7], arg1[7], arg2, 32768.0f, cpu_chooseCharacters[6],
+    spawn_player(gPlayerEight, 7, arg0[7], arg1[7], spawnY, 32768.0f, cpu_chooseCharacters[6],
                  PLAYER_EXISTS | PLAYER_START_SEQUENCE | PLAYER_CPU);
     D_80164A28 = 0;
     func_80039AE4();
