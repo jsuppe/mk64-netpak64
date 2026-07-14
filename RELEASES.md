@@ -6,6 +6,24 @@ commit, build flags, and md5. Rollback ROMs live in
 them, named `<version>_<md5>.tape` — a tape verifies ONLY the exact ROM that
 recorded it (sim is ROM-layout-sensitive; see HARNESS_NOTES.md).
 
+## v60 — 2026-07-13 — HOST CAN PICK BATTLE + ARENA (menu flow)
+- commit: version-bump cut — after e550f8611 (battle course-select refactor)
+- product ROM: md5 567408ab (`releases/v60_product_567408ab.z64`)
+- ADDS: online host menu for battle. SELECT CLASS now offers 50/100/150cc +
+  BATTLE; picking BATTLE opens the room and the host chooses the arena on the
+  vanilla battle course-select screen (map previews, same look as split-screen
+  2p/3p/4p battle); joiners see WAITING FOR HOST and adopt it (like GP). Lobby
+  shows "BATTLE".
+- gates: harness8 = ALL 8 IDENTICAL (GP determinism untouched — battle code is
+  additive and only runs when BATTLE is selected). xsmoke DEFERRED (balthazar
+  offline); menu-only + render change, transport unchanged from v59.
+- **KNOWN, NOT YET PLAYABLE**: launching a battle still CRASHES on the first sim
+  frame — the kart falls off the Big Donut platform (calculate_surface_height
+  OOB, posY ~= -2994). The menu is fully navigable but selecting an arena and
+  starting will crash. Next fix = Lakitu start-hold (skip gravity until GO).
+  Only Big Donut has a 1P spawn wired; the other 3 arenas spawn nothing.
+- also: refreshed mk64_netpak_human.z64 (balthazar cross-machine ROM) to 60.
+
 ## v59 — 2026-07-13 — JOINER SEES THE LAKITU COUNTDOWN LIGHTS
 - commit: version-bump cut — after 2e819c79a (joiner-Lakitu fix)
 - product ROM: md5 118925cd (`releases/v59_product_118925cd.z64`)

@@ -14,7 +14,7 @@
 
 /** Build number shown on the title screen ("JSUPPE VERSION N") so a stale ROM
  *  is obvious at a glance. BUMP THIS every time a new ROM is handed out. */
-#define NETPAK_ROM_VERSION 59
+#define NETPAK_ROM_VERSION 60
 
 /** Spectator (phase 2): true when this console joined a room to WATCH. */
 bool net_menu_local_spectator(void);
