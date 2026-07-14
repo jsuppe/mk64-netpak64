@@ -6,6 +6,29 @@ commit, build flags, and md5. Rollback ROMs live in
 them, named `<version>_<md5>.tape` — a tape verifies ONLY the exact ROM that
 recorded it (sim is ROM-layout-sensitive; see HARNESS_NOTES.md).
 
+## v65 — 2026-07-14 — battle: joiner camera feel + desync localization diagnostic
+- commit: version-bump cut — after 6bf6c760e
+- product ROM: md5 b22473b0 (`releases/v65_product_b22473b0.z64`)
+- FIX (joiner "speedboat drift" / wide turning-radius feel): the joiner's isolated
+  render-side chase-cam seeds its tuning region (zoom/height/distance) on the first
+  render frame — the intro flyover, with sky-high values. GP re-seeds to chase
+  values at the racing edge (camera mode 8→1); battle runs mode 9 (never that
+  edge), so the joiner kept the intro-flyover altitude/zoom = a too-high, too-wide
+  view whose turns read as drift. Added a one-shot battle re-seed
+  (sCamBattleSeeded) mirroring GP. Render-only, joiner-side, cam_pop-isolated.
+- DIAGNOSTIC (the desync is NOT fully fixed yet): v64's seed-in-hash proved the
+  remaining cross-machine battle desync (relay: still frame ~608 on v64) is a
+  direct physics-FIELD split, not the RNG seed (seed stayed in sync). Added
+  per-kart sub-hash pokes (tag 0x78, kart<<20|subhash) for online battle, logged
+  by the relay, so the NEXT console test reveals WHICH kart (host slot 0 / joiner
+  slot 1 / other) diverges first — the key next clue to pin the field.
+- STILL OPEN: the cross-machine battle desync itself (red squares) — need the v65
+  per-kart relay data to localize. Can't reproduce in emulator-vs-emulator
+  (TESTAB clean; console-only).
+- Verified loopback: harness8 8/8 identical (152 frames); battleprobe 1224 frames
+  0 desync, per-kart pokes firing.
+- refreshed mk64_netpak_human.z64 -> 65.
+
 ## v64 — 2026-07-14 — battle: fix cross-machine DESYNC (balloon jitter advanced the sim RNG)
 - commit: version-bump cut — after a77ff7521 (desync fix + seed-in-hash)
 - product ROM: md5 624c5bfe (`releases/v64_product_624c5bfe.z64`)
