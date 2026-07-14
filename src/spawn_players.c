@@ -565,36 +565,55 @@ void spawn_players_gp_one_player(f32* arg0, f32* arg1, f32 arg2) {
  * sets the HUD region, like every battle spawn. */
 void spawn_players_online_battle(f32* arg0, f32* arg1, f32 arg2) {
     extern bool net_menu_take_synced_chars(s8*, s16*);
-    f32 spawnY;
+    Player* const players[8] = { gPlayerOneCopy, gPlayerTwo, gPlayerThree, gPlayerFour,
+                                 gPlayerFive, gPlayerSix, gPlayerSeven, gPlayerEight };
+    f32 px[8], pz[8], py[8], baseY;
+    s32 i;
     (void) arg2; /* the caller's Y (sp5A) is UNINITIALIZED for battle arenas —
-                  * func_8003C0F0 sets it only for racing courses. spawn_player
-                  * uses it as a DOWNWARD search ceiling in get_surface_height,
-                  * so a garbage-low value returns the -3000 default and the kart
-                  * spawns below the platform (off-mesh -> calculate_surface_height
-                  * crash). Derive a real ceiling from the arena surface at the
-                  * first ring position (searching from far above), so every kart
-                  * lands ON the arena. */
-    spawnY = get_surface_height(arg0[0], 30000.0f, arg1[0]) + 100.0f;
+                  * func_8003C0F0 sets it only for racing courses. */
+    /* Anchor at kart 0's ring position (a split-screen cardinal, always on the
+     * stage). Any kart position get_surface_height can't resolve (off the stage
+     * — e.g. an octagon diagonal on a small/odd arena) falls back to kart 0's
+     * spot, so no kart ever spawns off-mesh (which crashes calculate_surface_
+     * height on the next sim tick). get_surface_height uses posY as a DOWNWARD
+     * search ceiling; 30000 is safely above every stage, so it always finds the
+     * top surface at a valid (x,z), and returns the -3000/3000 sentinels off it. */
+    baseY = get_surface_height(arg0[0], 30000.0f, arg1[0]);
+    for (i = 0; i < 8; i++) {
+        f32 h = get_surface_height(arg0[i], 30000.0f, arg1[i]);
+        if (h <= -2999.0f || h >= 2999.0f) { /* off the stage -> use kart 0's spot */
+            px[i] = arg0[0]; pz[i] = arg1[0]; py[i] = baseY + 100.0f;
+        } else {
+            px[i] = arg0[i]; pz[i] = arg1[i]; py[i] = h + 100.0f;
+        }
+    }
     func_80039DA4();
     net_menu_take_synced_chars(&gCharacterSelections[0], cpu_chooseCharacters);
-    spawn_player(gPlayerOneCopy, 0, arg0[0], arg1[0], spawnY, 32768.0f, gCharacterSelections[0],
-                 PLAYER_EXISTS | PLAYER_START_SEQUENCE | PLAYER_HUMAN);
-    spawn_player(gPlayerTwo, 1, arg0[1], arg1[1], spawnY, 32768.0f, cpu_chooseCharacters[0],
-                 PLAYER_EXISTS | PLAYER_START_SEQUENCE | PLAYER_CPU);
-    spawn_player(gPlayerThree, 2, arg0[2], arg1[2], spawnY, 32768.0f, cpu_chooseCharacters[1],
-                 PLAYER_EXISTS | PLAYER_START_SEQUENCE | PLAYER_CPU);
-    spawn_player(gPlayerFour, 3, arg0[3], arg1[3], spawnY, 32768.0f, cpu_chooseCharacters[2],
-                 PLAYER_EXISTS | PLAYER_START_SEQUENCE | PLAYER_CPU);
-    spawn_player(gPlayerFive, 4, arg0[4], arg1[4], spawnY, 32768.0f, cpu_chooseCharacters[3],
-                 PLAYER_EXISTS | PLAYER_START_SEQUENCE | PLAYER_CPU);
-    spawn_player(gPlayerSix, 5, arg0[5], arg1[5], spawnY, 32768.0f, cpu_chooseCharacters[4],
-                 PLAYER_EXISTS | PLAYER_START_SEQUENCE | PLAYER_CPU);
-    spawn_player(gPlayerSeven, 6, arg0[6], arg1[6], spawnY, 32768.0f, cpu_chooseCharacters[5],
-                 PLAYER_EXISTS | PLAYER_START_SEQUENCE | PLAYER_CPU);
-    spawn_player(gPlayerEight, 7, arg0[7], arg1[7], spawnY, 32768.0f, cpu_chooseCharacters[6],
-                 PLAYER_EXISTS | PLAYER_START_SEQUENCE | PLAYER_CPU);
+    for (i = 0; i < 8; i++) {
+        s16 flags = PLAYER_EXISTS | PLAYER_START_SEQUENCE | (i == 0 ? PLAYER_HUMAN : PLAYER_CPU);
+        s16 chr = (i == 0) ? gCharacterSelections[0] : cpu_chooseCharacters[i - 1];
+        spawn_player(players[i], (s8) i, px[i], pz[i], py[i], 32768.0f, chr, flags);
+    }
     D_80164A28 = 0;
     func_80039AE4();
+}
+
+/* NetPak64: place the 8 online-battle karts on a radius-r octagon (cardinals at
+ * r, diagonals at r*cos45) and spawn them. The radius is per-arena so the karts
+ * land on that stage's surface (an off-surface X/Z gives an invalid collision
+ * index -> calculate_surface_height crash), matching the split-screen spawns:
+ * Big Donut 575, Skyscraper 400, Block Fort 200, Double Deck 160. */
+void spawn_players_online_battle_ring(f32 r) {
+    f32 d = r * 0.70710678f;
+    D_80165210[0] = 0.0f; D_80165230[0] = r;
+    D_80165210[1] = d;    D_80165230[1] = d;
+    D_80165210[2] = r;    D_80165230[2] = 0.0f;
+    D_80165210[3] = d;    D_80165230[3] = -d;
+    D_80165210[4] = 0.0f; D_80165230[4] = -r;
+    D_80165210[5] = -d;   D_80165230[5] = -d;
+    D_80165210[6] = -r;   D_80165230[6] = 0.0f;
+    D_80165210[7] = -d;   D_80165230[7] = d;
+    spawn_players_online_battle(D_80165210, D_80165230, 0.0f);
 }
 
 void spawn_players_versus_one_player(f32* arg0, f32* arg1, f32 arg2) {
@@ -1043,6 +1062,10 @@ void func_8003C0F0(void) {
 
         case COURSE_BLOCK_FORT:
             switch (gActiveScreenMode) {
+                case SCREEN_MODE_1P: /* NetPak64 online battle */
+                    spawn_players_online_battle_ring(200.0f);
+                    break;
+
                 case SCREEN_MODE_2P_SPLITSCREEN_HORIZONTAL:
                 case SCREEN_MODE_2P_SPLITSCREEN_VERTICAL:
                     temp = 5;
@@ -1075,6 +1098,10 @@ void func_8003C0F0(void) {
 
         case COURSE_SKYSCRAPER:
             switch (gActiveScreenMode) {
+                case SCREEN_MODE_1P: /* NetPak64 online battle */
+                    spawn_players_online_battle_ring(400.0f);
+                    break;
+
                 case SCREEN_MODE_2P_SPLITSCREEN_HORIZONTAL:
                 case SCREEN_MODE_2P_SPLITSCREEN_VERTICAL:
                     temp = 0x1E0;
@@ -1107,6 +1134,10 @@ void func_8003C0F0(void) {
 
         case COURSE_DOUBLE_DECK:
             switch (gActiveScreenMode) {
+                case SCREEN_MODE_1P: /* NetPak64 online battle */
+                    spawn_players_online_battle_ring(160.0f);
+                    break;
+
                 case SCREEN_MODE_2P_SPLITSCREEN_HORIZONTAL:
                 case SCREEN_MODE_2P_SPLITSCREEN_VERTICAL:
                     temp = 0x37;
@@ -1141,26 +1172,9 @@ void func_8003C0F0(void) {
             switch (gActiveScreenMode) {
                 case SCREEN_MODE_1P:
                     /* NetPak64 ONLINE BATTLE: vanilla never runs battle in 1P
-                     * screen mode (it's always split-screen), so this spawn path
-                     * did not exist. Place 8 karts in a ring and use the online
-                     * battle spawn (battle kart state — no Lakitu staging — so the
-                     * kart-render path func_8002D268 doesn't hang; the netcode
-                     * drives all 8). */
-                    /* 8 karts on a true radius-575 octagon (diagonals at
-                     * 575*cos45 = 406). The split-screen battle spawns place
-                     * karts at the cardinal points at radius 575, which is on the
-                     * Big Donut drivable ring; an off-ring position leaves the
-                     * kart's collision.meshIndexZX invalid and crashes
-                     * calculate_surface_height on the next sim tick. */
-                    D_80165210[0] = 0.0f;    D_80165230[0] = 575.0f;
-                    D_80165210[1] = 406.0f;  D_80165230[1] = 406.0f;
-                    D_80165210[2] = 575.0f;  D_80165230[2] = 0.0f;
-                    D_80165210[3] = 406.0f;  D_80165230[3] = -406.0f;
-                    D_80165210[4] = 0.0f;    D_80165230[4] = -575.0f;
-                    D_80165210[5] = -406.0f; D_80165230[5] = -406.0f;
-                    D_80165210[6] = -575.0f; D_80165230[6] = 0.0f;
-                    D_80165210[7] = -406.0f; D_80165230[7] = 406.0f;
-                    spawn_players_online_battle(D_80165210, D_80165230, sp5A);
+                     * screen mode, so this spawn path did not exist. 8 karts on
+                     * the Big Donut ring (radius 575). */
+                    spawn_players_online_battle_ring(575.0f);
                     break;
 
                 case SCREEN_MODE_2P_SPLITSCREEN_HORIZONTAL:
