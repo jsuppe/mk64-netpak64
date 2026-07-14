@@ -565,10 +565,18 @@ void spawn_players_gp_one_player(f32* arg0, f32* arg1, f32 arg2) {
  * sets the HUD region, like every battle spawn. */
 void spawn_players_online_battle(f32* arg0, f32* arg1, f32 arg2) {
     extern bool net_menu_take_synced_chars(s8*, s16*);
+    extern s32 net_menu_player_count(void);
     Player* const players[8] = { gPlayerOneCopy, gPlayerTwo, gPlayerThree, gPlayerFour,
                                  gPlayerFive, gPlayerSix, gPlayerSeven, gPlayerEight };
     f32 px[8], pz[8], py[8], baseY;
     s32 i;
+    /* Battle has NO CPU fillers: only the humans in the room play (like a
+     * split-screen 2p/3p/4p battle). Spawn every slot deterministically, but give
+     * PLAYER_EXISTS only to the np actual players; the netcode drives slots
+     * 0..np-1 (net_lockstep_tick forces them HUMAN) and never touches np..7. */
+    s32 np = net_menu_player_count();
+    if (np < 1) { np = 1; }
+    if (np > 8) { np = 8; }
     (void) arg2; /* the caller's Y (sp5A) is UNINITIALIZED for battle arenas —
                   * func_8003C0F0 sets it only for racing courses. */
     /* Anchor at kart 0's ring position (a split-screen cardinal, always on the
@@ -590,7 +598,8 @@ void spawn_players_online_battle(f32* arg0, f32* arg1, f32 arg2) {
     func_80039DA4();
     net_menu_take_synced_chars(&gCharacterSelections[0], cpu_chooseCharacters);
     for (i = 0; i < 8; i++) {
-        s16 flags = PLAYER_EXISTS | PLAYER_START_SEQUENCE | (i == 0 ? PLAYER_HUMAN : PLAYER_CPU);
+        s16 flags = ((i < np) ? PLAYER_EXISTS : 0) | PLAYER_START_SEQUENCE |
+                    (i == 0 ? PLAYER_HUMAN : PLAYER_CPU);
         s16 chr = (i == 0) ? gCharacterSelections[0] : cpu_chooseCharacters[i - 1];
         spawn_player(players[i], (s8) i, px[i], pz[i], py[i], 32768.0f, chr, flags);
     }
