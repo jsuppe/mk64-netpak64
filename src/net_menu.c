@@ -119,7 +119,6 @@ static void net_menu_check_ver(u8 pad) {
 enum OnlineMenuState {
     OM_MAIN,       /* HOST GAME / JOIN GAME / FIND GAME / NAME */
     OM_HOST_CC,    /* host-only: pick 50/100/150cc or BATTLE before opening the room */
-    OM_HOST_ARENA, /* host-only: pick the battle arena (after choosing BATTLE) */
     OM_HOST_VIS,   /* host-only: PRIVATE (code-only) or PUBLIC (listed) room */
     OM_HOSTING,    /* created a room; showing code, waiting for players */
     OM_JOIN_ENTRY, /* dialing in a code */
@@ -128,21 +127,13 @@ enum OnlineMenuState {
     OM_FIND        /* browsing public rooms (LIST_GAMES, v47) */
 };
 
-/* Host's mode/arena pick on the SELECT CLASS screen. sClassSel is the 4-way
- * cursor (0/1/2 = 50/100/150cc, 3 = BATTLE); sHostBattle latches on BATTLE and
- * sHostArena holds the chosen arena course id. Battle arenas in vanilla-cup
- * order (gCupCourseOrder[BATTLE_CUP]); net_menu.c doesn't include course.h so
- * the ids are literals. */
+/* Host's game-type pick on the SELECT CLASS screen. sClassSel is the 4-way
+ * cursor (0/1/2 = 50/100/150cc, 3 = BATTLE); sHostBattle latches on BATTLE. The
+ * arena itself is chosen later on the vanilla battle course-select screen (same
+ * look as split-screen battle), not in the lobby. */
 #define OM_CLASS_BATTLE 3
 static s32 sClassSel;      /* 0 50cc, 1 100cc, 2 150cc, 3 BATTLE */
 static s32 sHostBattle;    /* host chose BATTLE on the class screen */
-static s32 sArenaSel;      /* battle-arena cursor 0..3 */
-static u8  sHostArena;     /* chosen battle arena course id */
-static const u8 kBattleArenas[4] = { 0x13, 0x0F, 0x11, 0x10 }; /* Big Donut,
-                              Block Fort, Double Deck, Skyscraper */
-static const char* const kBattleArenaNames[4] = {
-    "BIG DONUT", "BLOCK FORT", "DOUBLE DECK", "SKYSCRAPER"
-};
 #define OM_MAIN_OPTIONS 4 /* HOST / JOIN / FIND / NAME */
 
 static s32  sState;
@@ -247,19 +238,18 @@ static s32 sOnlineDelay; /* lockstep input delay for the coming race (v40):
                           * same value from START chars[1]. 0 until set;
                           * net_lockstep_set_delay clamps to 2..8. */
 
-/* Host: decide this session's mode + arena, to ride START (chars[2]/chars[3]).
- * For now driven by the gNetTestBattle probe knob (0 in product -> GRAND_PRIX);
- * the host lobby BATTLE toggle + arena picker will set these directly. Keep the
- * arena a real, spawnable stage — spawn_players.c currently has the 1P-screen
- * battle grid only for Big Donut (0x13). */
+/* Host: decide this session's mode for START (chars[2]). BATTLE comes from the
+ * SELECT CLASS pick (sHostBattle); the ARENA is chosen later on the real
+ * course-select screen (like a GP track), so sOnlineArena stays 0 here and
+ * sOnlineCourse is left 0xFF ("pick on screen"). The gNetTestBattle probe has
+ * no human to pick, so it pre-sets a fixed arena (Big Donut). */
 static void net_menu_host_set_mode(void) {
     extern u32 gNetTestBattle; /* net_race.c; 0 unless a test build pokes it */
     sOnlineMode = GRAND_PRIX;
     sOnlineArena = 0;
-    if (sHostBattle) { /* host picked BATTLE + an arena on the class screen */
+    if (sHostBattle) { /* host picked BATTLE on the class screen; arena on-screen */
         sOnlineMode = BATTLE;
-        sOnlineArena = sHostArena;
-    } else if (gNetTestBattle) { /* test-harness override -> Big Donut */
+    } else if (gNetTestBattle) { /* test-harness override -> pre-decided Big Donut */
         sOnlineMode = BATTLE;
         sOnlineArena = 0x13; /* COURSE_BIG_DONUT */
     }
@@ -296,8 +286,10 @@ static void net_menu_start_race(void) {
      * on the same frame, so the host's race-entry block-sync never streams to a
      * joiner that hasn't launched yet (the wedge that broke unsynced battle). */
     gModeSelection = sOnlineMode;
-    if (sOnlineMode == BATTLE) {
-        /* the arena IS the course, decided by the host (not picked on-screen) */
+    if (sOnlineMode == BATTLE && sOnlineArena != 0) {
+        /* pre-decided arena (probe / a joiner who adopted it from START): the
+         * arena is the course. A menu battle host has sOnlineArena==0 and
+         * sOnlineCourse==0xFF -> it picks the arena on the course screen (GP-style). */
         sOnlineCourse = sOnlineArena;
         gCurrentCourseId = (s16) sOnlineArena;
     }
@@ -1116,41 +1108,19 @@ void net_menu_update(struct Controller* controller) {
                 sState = OM_MAIN;
                 play_sound2(SOUND_MENU_GO_BACK);
             } else if (btn & A_BUTTON) {
-                if (sClassSel == OM_CLASS_BATTLE) { /* BATTLE -> pick an arena */
-                    sHostBattle = 1;
-                    sState = OM_HOST_ARENA;
-                    play_sound2(SOUND_MENU_BATTLE);
-                } else { /* Grand Prix class locked -> visibility pick */
-                    sHostBattle = 0;
+                sHostBattle = (sClassSel == OM_CLASS_BATTLE);
+                if (!sHostBattle) {
                     sCcSel = sClassSel; /* 0/1/2 == CC_50/CC_100/CC_150 */
-                    sHostPublic = 1; /* PUBLIC default (FIND GAME expects it);
-                        PRIVATE is one D-pad press away on the next screen. */
-                    sState = OM_HOST_VIS;
                     play_sound2(SOUND_MENU_SELECT);
+                } else {
+                    /* BATTLE: the arena is picked on the REAL course-select screen
+                     * (the vanilla battle map screen, same look as split-screen
+                     * battle) — not in the lobby. Just open the room. */
+                    play_sound2(SOUND_MENU_BATTLE);
                 }
-            }
-            break;
-
-        case OM_HOST_ARENA:
-            /* Battle only: pick which arena to host. Rides START (chars[3]) so
-             * every joiner loads the same stage. */
-            if (btn & (U_JPAD | L_JPAD)) {
-                sArenaSel = (sArenaSel + 3) % 4;
-                play_sound2(SOUND_MENU_CURSOR_MOVE);
-            }
-            if (btn & (D_JPAD | R_JPAD)) {
-                sArenaSel = (sArenaSel + 1) % 4;
-                play_sound2(SOUND_MENU_CURSOR_MOVE);
-            }
-            if (btn & B_BUTTON) {
-                sHostBattle = 0;
-                sState = OM_HOST_CC; /* back to SELECT CLASS */
-                play_sound2(SOUND_MENU_GO_BACK);
-            } else if (btn & A_BUTTON) { /* arena locked -> visibility pick */
-                sHostArena = kBattleArenas[sArenaSel];
-                sHostPublic = 1;
+                sHostPublic = 1; /* PUBLIC default (FIND GAME expects it);
+                    PRIVATE is one D-pad press away on the next screen. */
                 sState = OM_HOST_VIS;
-                play_sound2(SOUND_MENU_SELECT);
             }
             break;
 
@@ -1207,9 +1177,12 @@ void net_menu_update(struct Controller* controller) {
                 OnlineMsg m;
                 s32 ci;
                 net_online_barrier_arm_host(); /* refresh roster, wait for these peers */
-                net_menu_host_set_mode();      /* GRAND_PRIX or BATTLE + arena */
-                sOnlineCourse = (sOnlineMode == BATTLE) ? sOnlineArena
-                                                        : 0xFF; /* v32: GP course picked on-screen */
+                net_menu_host_set_mode();      /* GRAND_PRIX or BATTLE */
+                /* 0xFF = "pick on the course screen": GP always, and a menu
+                 * BATTLE host too (arena chosen on the vanilla battle map). Only
+                 * a pre-decided arena (probe, sOnlineArena!=0) rides START. */
+                sOnlineCourse = (sOnlineMode == BATTLE && sOnlineArena != 0)
+                                    ? sOnlineArena : 0xFF;
                 sOnlineCc = sCcSel;
                 m.tag = OLMSG_TAG;
                 m.spec = 0;
@@ -1293,9 +1266,10 @@ void net_menu_update(struct Controller* controller) {
                 OnlineMsg m;
                 s32 ci;
                 net_online_barrier_arm_host();
-                net_menu_host_set_mode(); /* GRAND_PRIX or BATTLE + arena (probe) */
-                sOnlineCourse = (sOnlineMode == BATTLE) ? sOnlineArena
-                                                        : kCourses[sCourseSel].id;
+                net_menu_host_set_mode(); /* GRAND_PRIX or BATTLE (probe) */
+                sOnlineCourse = (sOnlineMode == BATTLE)
+                                    ? (sOnlineArena != 0 ? sOnlineArena : 0xFF)
+                                    : kCourses[sCourseSel].id;
                 sOnlineCc = sCcSel;
                 m.tag = OLMSG_TAG;
                 m.spec = 0;
@@ -1595,21 +1569,6 @@ void net_menu_render(void) {
             print_text1_center_mode_1(0xA0, 0xC6, "B  BACK", 0, 0.7f, 0.7f);
             break;
 
-        case OM_HOST_ARENA: {
-            s32 ai;
-            s32 ay = 0x66;
-            set_text_color(TEXT_GREEN);
-            print_text1_center_mode_1(0xA0, 0x50, "SELECT ARENA", 0, 0.8f, 0.8f);
-            for (ai = 0; ai < 4; ai++) {
-                draw_option(0xA0, ay, (char*) kBattleArenaNames[ai], sArenaSel == ai);
-                ay += 0x12;
-            }
-            set_text_color(TEXT_YELLOW);
-            print_text1_center_mode_1(0xA0, 0xB8, "A  HOST GAME", 0, 0.7f, 0.7f);
-            print_text1_center_mode_1(0xA0, 0xC6, "B  BACK", 0, 0.7f, 0.7f);
-            break;
-        }
-
         case OM_HOSTING:
         case OM_JOINED: {
             s32 i;
@@ -1673,13 +1632,15 @@ void net_menu_render(void) {
             }
 
             if (sState == OM_HOSTING) { /* host chooses the track for the room */
-                set_text_color(TEXT_GREEN);
                 set_text_color(TEXT_BLUE);
-                print_text1_center_mode_1(0xA0, 0xB6,
-                    sCcSel == CC_50 ? "50CC" : (sCcSel == CC_150 ? "150CC" : "100CC"), 0, 0.7f, 0.7f);
+                print_text1_center_mode_1(0xA0, 0xB6, sHostBattle ? "BATTLE"
+                    : (sCcSel == CC_50 ? "50CC" : (sCcSel == CC_150 ? "150CC" : "100CC")),
+                    0, 0.7f, 0.7f);
                 set_text_color(TEXT_YELLOW);
                 print_text1_center_mode_1(0xA0, 0xC8, "START  BEGIN", 0, 0.7f, 0.7f);
-                print_text1_center_mode_1(0xA0, 0xD8, "COURSE IS PICKED ON THE NEXT SCREEN", 0, 0.45f, 0.5f);
+                print_text1_center_mode_1(0xA0, 0xD8,
+                    sHostBattle ? "ARENA IS PICKED ON THE NEXT SCREEN"
+                                : "COURSE IS PICKED ON THE NEXT SCREEN", 0, 0.45f, 0.5f);
             } else { /* joiner waits for the host to pick + start */
                 set_text_color(TEXT_YELLOW);
                 if (sLobbyCc <= CC_150) {

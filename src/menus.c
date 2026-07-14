@@ -1728,18 +1728,16 @@ void course_select_menu_act(struct Controller* arg0, u16 controllerIdx) {
         static s32 sOnlineLocked;
         s32 hostCourse = net_menu_online_course();
 
-        if (gModeSelection == BATTLE) {
-            /* ONLINE BATTLE: the arena is pre-decided (host-picked in the lobby,
-             * rode START chars[3]) — NOT chosen on this screen. Host AND joiner
-             * run the SAME auto-drive: walk the battle-course sub-state to OK,
-             * then hold at the SAME start barrier GP uses so the whole room
-             * enters RACING on one frame. Unsynchronized launch is exactly what
-             * wedged the joiner's race-entry block-sync (task #20). */
+        if (gModeSelection == BATTLE && net_menu_is_host() &&
+            hostCourse != 0xFF && hostCourse != -1) {
+            /* PRE-DECIDED battle arena (the gNetTestBattle probe: no human to
+             * pick). Auto-drive the battle map sub-state to OK, then hold at the
+             * SAME start barrier GP uses. A MENU battle host (arena == 0xFF)
+             * falls through to the normal HOST path below and picks the arena on
+             * the vanilla battle map screen; every JOINER takes the adopt path. */
             s32 bi;
             btnAndStick = 0; /* swallow the pad: no manual pick, no back-out */
             gCupSelection = BATTLE_CUP;
-            /* map the arena course id to its battle-cup slot so the sub-state's
-             * gCupCourseOrder lookup re-derives OUR arena, not cup slot 0 */
             for (bi = 0; bi < 4; bi++) {
                 if (gCupCourseOrder[BATTLE_CUP][bi] == (s16) hostCourse) {
                     gCourseIndexInCup = bi;
@@ -1789,8 +1787,12 @@ void course_select_menu_act(struct Controller* arg0, u16 controllerIdx) {
                         net_menu_online_clear();
                         sOnlineLocked = 0;
                     }
-                    /* GP cup bookkeeping: race as cup slot 0 for grid/CPU init */
-                    gCourseIndexInCup = 0;
+                    /* GP cup bookkeeping: race as cup slot 0 for grid/CPU init.
+                     * NOT for BATTLE — the host's chosen arena is at its own
+                     * battle-cup slot, and forcing 0 would snap it to Big Donut. */
+                    if (gModeSelection != BATTLE) {
+                        gCourseIndexInCup = 0;
+                    }
                 }
                 goto online_host_interactive;
             }
