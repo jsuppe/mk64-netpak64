@@ -6,6 +6,35 @@ commit, build flags, and md5. Rollback ROMs live in
 them, named `<version>_<md5>.tape` — a tape verifies ONLY the exact ROM that
 recorded it (sim is ROM-layout-sensitive; see HARNESS_NOTES.md).
 
+## v64 — 2026-07-14 — battle: fix cross-machine DESYNC (balloon jitter advanced the sim RNG)
+- commit: version-bump cut — after a77ff7521 (desync fix + seed-in-hash)
+- product ROM: md5 624c5bfe (`releases/v64_product_624c5bfe.z64`)
+- ROOT CAUSE (from v63 console play: red squares mid-game + joiner freeze at
+  battle-end). Relay diag confirmed a real sim desync at frame 656/960/1024
+  (varies per game, never at spawn) — combat-triggered. Agent-traced:
+  update_player_one_balloon_position calls random_int for COSMETIC balloon jitter
+  (code_80057C60.c:6001/6028/6034), mutating gRandomSeed16 — the shared sim RNG
+  lockstep carries frame-to-frame. Battle-only path (GP never runs it). The float
+  accumulators gating those calls are unhashed+unsynced, so a sub-hash per-console
+  difference changes the random_int call count that frame → sim seed diverges →
+  next frame's item rolls/physics split → a hashed field finally diverges hundreds
+  of frames later. The 0x76/0x77 hash never covered the RNG seed, so it was
+  invisible until it leaked — exactly the mid-game/varies signature.
+- FIX (a77ff7521): for online, save+restore gRandomSeed16 around the battle
+  balloon-position update — jitter stays cosmetic but never advances the shared
+  sim stream. Also folded gRandomSeed16 into both sim hashes so this whole class
+  of RNG-stream divergence is now caught on the frame it happens (confirmation +
+  future safety). The joiner end-freeze was a symptom: a desynced sim reaches
+  battle-over on different frames, so the clean-leave couldn't fire together — the
+  desync fix should resolve it.
+- Verified loopback: harness8 8/8 identical (153 frames, seed in hash, no false
+  positives, GP intact); battleprobe 1210 frames 0 desync. CROSS-MACHINE console
+  verification PENDING (this is the loopback blindspot — must test on device).
+- STILL OPEN: joiner chase-cam angle/steering feel (needs console tuning; battle
+  cam mode 9 func_8001EA0C tracks heading like GP mode 1, so likely not a tracking
+  failure — may have been the desync perturbing the kart).
+- refreshed mk64_netpak_human.z64 -> 64.
+
 ## v63 — 2026-07-13 — battle gameplay fixes: host drives, no end-freeze, HUD/minimap/balloons
 - commit: version-bump cut — after fee2d947f (balloon visibility+scale)
 - product ROM: md5 745abc7b (`releases/v63_product_745abc7b.z64`)
