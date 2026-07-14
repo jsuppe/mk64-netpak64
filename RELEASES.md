@@ -6,6 +6,32 @@ commit, build flags, and md5. Rollback ROMs live in
 them, named `<version>_<md5>.tape` — a tape verifies ONLY the exact ROM that
 recorded it (sim is ROM-layout-sensitive; see HARNESS_NOTES.md).
 
+## v66 — 2026-07-14 — battle: stop the battle-END console freeze (menu lookups fail soft)
+- commit: version-bump cut — after 0e7ae8028
+- product ROM: md5 9e542665 (`releases/v66_product_9e542665.z64`)
+- v65 console play: an online battle ended IN SYNC (relay: NO desync, both nodes
+  ran to df~1052, both sent LEAVE) — the desync work is holding — but then
+  black-screened with looping audio (a busy-loop freeze), AFTER my end-intercept
+  fired.
+- ROOT: MK64's menu-item lookups hard-lock the console (`while(true){;}`) on any
+  absent type — find_menu_items_dupe, get_menu_item_player_count,
+  get_menu_item_character, add_menu_item table-full. Online 1P battle runs
+  gPlayerCount==1, which OOB-indexes D_800E7300 in the battle results path and
+  spawns the wrong row set → a lookup misses → console dies.
+- FIX (0e7ae8028): all four loops now degrade gracefully (return a shared inert
+  MenuItem / drop the overflow item) instead of spinning forever. Each miss pokes
+  the offending type (0x7B lookups, 0x7A add-overflow); 0x79 pokes at the
+  battle-end intercept (relay-visible) to confirm the path next test.
+- STILL OPEN: (1) the battle-end should reach the menu cleanly now, but if it
+  lands on a wrong/stuck menu instead of a hard freeze, the 0x7B/0x79 pokes will
+  tell us what to fix next. (2) joiner driving feel (camera re-seed in v65 didn't
+  resolve it — likely input-delay handling; needs console tuning). (3) the
+  cross-machine desync itself was NOT seen in the v65 game but isn't proven
+  fixed; per-kart 0x78 pokes remain armed to localize it.
+- Verified loopback: harness8 8/8 identical (153 frames); battleprobe 1111 frames
+  0 desync. Menu fallbacks are inert in normal play (types always exist).
+- refreshed mk64_netpak_human.z64 -> 66.
+
 ## v65 — 2026-07-14 — battle: joiner camera feel + desync localization diagnostic
 - commit: version-bump cut — after 6bf6c760e
 - product ROM: md5 b22473b0 (`releases/v65_product_b22473b0.z64`)
