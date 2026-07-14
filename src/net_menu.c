@@ -225,6 +225,13 @@ static u32  sHostGonePolls;       /* lobby: consecutive roster polls with the ho
 static u8   sBarrierPick[8];      /* host: character pick reported by each barrier peer */
 static u8   sSyncChars[8];        /* per-slot character table for the coming race */
 static bool sSyncCharsValid;      /* set once the table is agreed (GO) */
+static u8   sSyncNp;              /* roster size FROZEN at GO (host-authoritative,
+                                  * broadcast in GO.course). net_menu_player_count
+                                  * returns this during a race so every console
+                                  * agrees on the count — the live sPeerCount+1
+                                  * still races as late joins propagate, which
+                                  * made online battle spawn N vs N+1 karts and
+                                  * desync at frame 0 (8p-battle finding). */
 #define BARRIER_TIMEOUT_TICKS 1800 /* ~30 s: fail FORWARD (launch; in-race drop                                     * arbitration turns absentees into bots) */
 #define LOBBY_HOST_GONE_POLLS 6    /* ~3 s of roster polls: fall BACK to the menu                                     * (no course chosen yet, nothing to launch) */
 
@@ -338,6 +345,14 @@ s32 net_menu_node_id(void) {
 
 /* Players in the room this frame (self + peers). */
 s32 net_menu_player_count(void) {
+    /* Once the GO handshake has frozen the roster, return that agreed size, not
+     * the live sPeerCount+1 (which keeps changing as a late join propagates).
+     * The battle spawn keys PLAYER_EXISTS off this, so a per-console difference
+     * spawned a different kart count and desynced at frame 0. Consistent for GP
+     * too (the frozen size equals the converged live count). */
+    if (sSyncCharsValid && sSyncNp >= 1 && sSyncNp <= 8) {
+        return sSyncNp;
+    }
     return sPeerCount + 1;
 }
 
@@ -443,6 +458,7 @@ static void net_online_barrier_arm_host(void) {
     }
     sIsHost = true;
     sSyncCharsValid = false;
+    sSyncNp = 0; /* re-frozen at GO */
     sSpecMask = 0; /* rebuilt from this race's READY markers + lobby announces */
     for (i = 0; i < 8; i++) {
         sBarrierPick[i] = 0xFF;
@@ -495,6 +511,10 @@ bool net_online_barrier_ready(void) {
                         sSyncChars[i] = pkt.data[4 + i];
                     }
                     sSyncCharsValid = true;
+                    /* adopt the host's FROZEN roster size (GO.course) so we spawn
+                     * the same kart count as everyone else — 0 from a pre-fix
+                     * host falls back to the live count via the range guard. */
+                    sSyncNp = pkt.data[2];
                 }
                 /* adopt the host's spectator mask (v53 GO carries it; the
                  * version cross-check keeps pre-v53 peers out of the room) */
@@ -611,9 +631,10 @@ bool net_online_barrier_ready(void) {
             build_sync_chars(); /* freeze the character table for this race */
             sSpecMask |= sLobbySpecMask; /* READY markers are authoritative;
                                           * lobby announces are the backup */
+            sSyncNp = (u8) (1 + sBarrierN); /* freeze the roster size too */
             m.tag = OLMSG_TAG;
             m.type = OLMSG_GO;
-            m.course = 0;
+            m.course = sSyncNp; /* carry the frozen roster (GO ignores course) */
             m.pad = (u8) NETPAK_ROM_VERSION; /* version cross-check */
             for (k = 0; k < 8; k++) {
                 m.chars[k] = sSyncChars[k];
