@@ -6,6 +6,29 @@ commit, build flags, and md5. Rollback ROMs live in
 them, named `<version>_<md5>.tape` — a tape verifies ONLY the exact ROM that
 recorded it (sim is ROM-layout-sensitive; see HARNESS_NOTES.md).
 
+## v67 — 2026-07-14 — battle: fix 8-PLAYER frame-0 desync (spawn from GO-frozen roster)
+- commit: version-bump cut — after 806711240
+- product ROM: md5 5415ee70 (`releases/v67_product_5415ee70.z64`)
+- Built an 8-player battle harness (battleprobe8.sh) and found online 8p battle
+  DESYNCS at frame 0. Per-kart pokes localized it: karts 0-6 hash identical
+  everywhere, but kart 7 exists on some instances and not others — they spawned
+  DIFFERENT kart counts. ROOT: net_menu_player_count() returned the live
+  sPeerCount+1, which races as the last joiner propagates; the no-CPU-filler
+  battle spawn keys PLAYER_EXISTS off it → 7 karts on one console vs 8 on another
+  → kart 7 type differs → frame-0 hash split.
+- FIX (806711240): the host already freezes the roster at GO (1+sBarrierN); now it
+  broadcasts that count in the GO message's course byte, every console adopts it
+  as sSyncNp, and net_menu_player_count() returns the frozen size during a race.
+  Backward-safe (pre-fix host sends 0 → range guard falls back to live count).
+- Verified: battleprobe8 8-way identical at spawn 0 desync; GP harness8 8/8 (153f);
+  2p battle 1196f 0 desync; 8p battle advances deterministically at full speed
+  (no-GDB harness — the earlier stall was the harness debug-server throttling the
+  block broadcast, not a wedge).
+- STILL OPEN (unchanged from v66): confirm battle-END reaches menu cleanly on
+  console; joiner driving feel; cross-machine 2p desync not seen recently but
+  unproven.
+- refreshed mk64_netpak_human.z64 -> 67.
+
 ## v66 — 2026-07-14 — battle: stop the battle-END console freeze (menu lookups fail soft)
 - commit: version-bump cut — after 0e7ae8028
 - product ROM: md5 9e542665 (`releases/v66_product_9e542665.z64`)
