@@ -6,6 +6,36 @@ commit, build flags, and md5. Rollback ROMs live in
 them, named `<version>_<md5>.tape` — a tape verifies ONLY the exact ROM that
 recorded it (sim is ROM-layout-sensitive; see HARNESS_NOTES.md).
 
+## v63 — 2026-07-13 — battle gameplay fixes: host drives, no end-freeze, HUD/minimap/balloons
+- commit: version-bump cut — after fee2d947f (balloon visibility+scale)
+- product ROM: md5 745abc7b (`releases/v63_product_745abc7b.z64`)
+- FIXES (from v62 console play, all rooted in vanilla battle assuming 2-4
+  split-screen players in slots 0-3):
+  - **Host can't drive** (011ffe269): the 1P accel/steer handler
+    (`handle_a_press_for_all_players_during_race`) had GRAND_PRIX/TIME_TRIALS but
+    no BATTLE case, so slot 0 got zero driving input. Added BATTLE.
+  - **End-freeze** (5a73d8aab): the vanilla battle-results menu indexes
+    `D_800E7300[(gPlayerCount-2)*4]` and hard-loops (`while(true){;}`) on a
+    missing item type; online battle runs gPlayerCount==1 → (1-2)*4=-4 OOB →
+    both consoles froze after the winner shift. Online battle now skips the
+    results flow and cleanly leaves to the menu (net_menu_online_end +
+    session_leave + func_8028FBD4), deterministically.
+  - **Lap HUD** (5a73d8aab): 1P HUD drew "LAP 1/3"; guarded on != BATTLE.
+  - **Victory count** (5a73d8aab): update_player_battle_status looped slots 0-3;
+    now 0-7 so an online survivor in 4-7 can win/end the battle.
+  - **Joiner minimap** (5a73d8aab): battle radar looped `< gPlayerCountSelection1`
+    (=1) so the joiner never saw its own blip; now draws every existing kart and
+    highlights the local kart.
+  - **Balloons don't pop on joiner's screen** (fee2d947f): render was frustum-
+    culled per-screen and fix-scaled the wrong "own kart"; online battle now
+    skips the cull and keys own-kart off net_lockstep_local_slot().
+- STILL OPEN (needs console tuning with feedback): joiner chase-cam angle differs
+  from the host's sim camera (general chase-cam approximation, affects GP too);
+  other 3 arenas may cluster karts via the spawn fallback.
+- Verified: battleprobe 1200+ frames 0 desync; harness8 8/8 identical across 153
+  frames (GP determinism unaffected — all new code online+battle gated).
+- refreshed mk64_netpak_human.z64 -> 63.
+
 ## v62 — 2026-07-13 — battle: no CPU fillers (fixes stray karts + balloons)
 - commit: version-bump cut — after 5dd41cdc2 (no CPU fillers)
 - product ROM: md5 8c128832 (`releases/v62_product_8c128832.z64`)
