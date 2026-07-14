@@ -5458,7 +5458,12 @@ void add_menu_item(s32 type, s32 column, s32 row, s8 priority) {
         }
         i++;
         if (i > ARRAY_COUNT(gMenuItems)) {
-            while (true) {}
+            /* Menu-item table full. Vanilla hard-locked the console here; drop
+             * the item instead (a missing menu row beats a dead console). Poke
+             * the type so an over-spawn is traceable. */
+            extern void netpak_debug_poke(u32);
+            netpak_debug_poke(0x7A000000u | ((u32) type & 0xFFFFFFu));
+            return;
         }
         menuItem++;
     }
@@ -10145,6 +10150,11 @@ void func_800AAE18(MenuItem* arg0) {
     }
 }
 
+/* Inert fallback for the three menu-item lookups below: vanilla hard-locked the
+ * console (while(true){;}) on a missing type; online battle triggers that, so
+ * miss gracefully instead. See the full note at find_menu_items_dupe. */
+static MenuItem sMenuItemMiss;
+
 /**
  * Similar to find_menu_items_dupe, there is potential for a
  * hard lock in the function if no appropriate gMenuItems entry
@@ -10156,16 +10166,14 @@ MenuItem* get_menu_item_player_count(void) {
 
     for (; !(entry > &gMenuItems[MENU_ITEMS_MAX]); entry++) {
         if ((nbPlayer + MENU_ITEM_UI_1P_GAME) == entry->type) {
-            goto escape;
+            return entry;
         }
     }
-
-    // Something VERY wrong has occurred
-    while (true) {
-        ;
-    }
-escape:
-    return entry;
+    /* graceful miss instead of a console hard-lock (see find_menu_items_dupe) */
+    { extern void netpak_debug_poke(u32); netpak_debug_poke(0x7B000000u | ((u32) (nbPlayer + MENU_ITEM_UI_1P_GAME) & 0xFFFFFFu)); }
+    sMenuItemMiss.type = nbPlayer + MENU_ITEM_UI_1P_GAME;
+    sMenuItemMiss.state = 0;
+    return &sMenuItemMiss;
 }
 
 /**
@@ -10178,16 +10186,14 @@ MenuItem* get_menu_item_character(s32 characterId) {
 
     for (; !(entry > &gMenuItems[MENU_ITEMS_MAX]); entry++) {
         if ((characterId + CHARACTER_SELECT_MENU_MARIO) == entry->type) {
-            goto escape;
+            return entry;
         }
     }
-
-    // Something VERY wrong has occurred
-    while (true) {
-        ;
-    }
-escape:
-    return entry;
+    /* graceful miss instead of a console hard-lock (see find_menu_items_dupe) */
+    { extern void netpak_debug_poke(u32); netpak_debug_poke(0x7B000000u | ((u32) (characterId + CHARACTER_SELECT_MENU_MARIO) & 0xFFFFFFu)); }
+    sMenuItemMiss.type = characterId + CHARACTER_SELECT_MENU_MARIO;
+    sMenuItemMiss.state = 0;
+    return &sMenuItemMiss;
 }
 
 /**
@@ -10200,20 +10206,23 @@ escape:
  * probably as much a matter of luck as it is good
  * reasoning on the original author(s) part.
  **/
+/* Fallback returned when a lookup misses. Vanilla hard-locked the console on a
+ * missing type (the while-true above). Online battle breaks that luck: the
+ * battle results menu runs with gPlayerCount==1, indexes D_800E7300 out of
+ * bounds and spawns the wrong row set, so a lookup misses and the console
+ * black-screen froze with looping audio at battle end. Degrade to an inert item
+ * instead, and poke the missing type so a trace names the exact trigger. */
 MenuItem* find_menu_items_dupe(s32 type) {
     MenuItem* entry = gMenuItems;
     for (; !(entry > (&gMenuItems[MENU_ITEMS_MAX])); entry++) {
         if (entry->type == type) {
-            goto escape;
+            return entry;
         }
     }
-
-    // Something VERY wrong has occurred
-    while (true) {
-        ;
-    }
-escape:
-    return entry;
+    { extern void netpak_debug_poke(u32); netpak_debug_poke(0x7B000000u | ((u32) type & 0xFFFFFFu)); }
+    sMenuItemMiss.type = type;
+    sMenuItemMiss.state = 0;
+    return &sMenuItemMiss;
 }
 
 MenuItem* find_menu_items(s32 type) {

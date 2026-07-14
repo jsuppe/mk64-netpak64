@@ -80,6 +80,8 @@ void func_8028E028(void) {
      * aliveCounter<=1 at the same sim frame from the shared balloon counts. */
     if (net_menu_online_active() && gModeSelection == BATTLE) {
         extern void netpak_session_leave(void);
+        extern void netpak_debug_poke(u32);
+        netpak_debug_poke(0x79000000u | ((u32) gPlayerWinningIndex & 0xFFu)); /* battle-end intercept fired (relay-visible: still online) */
         net_menu_online_end();   /* disengage the in-race lockstep gate */
         netpak_session_leave();  /* leave the room */
         func_8028FBD4();         /* fade out -> START_MENU */
