@@ -6086,7 +6086,17 @@ void render_battle_balloon(Player* player, s8 playerIndex, s16 balloonIndex, s8 
     envBlue = (envColors[player->characterId] >> 0x00) & 0xFF;
     temp_t1 = (((player->unk_048[screenId] + player->rotation[1] + player->unk_0C0) & 0xFFFF) / 128);
     temp_t1 <<= 7;
-    if (screenId == playerIndex) {
+    {
+        /* "Own kart" gets the fixed close scale; everyone else scales by camera
+         * distance. Split-screen keys that off screenId==playerIndex, but online
+         * 1P always has screenId 0, so the joiner would fix-scale the HOST (slot
+         * 0) and distance-scale its own kart. Key off the local slot instead. */
+        extern s32 net_menu_online_active(void);
+        extern s32 net_lockstep_local_slot(void);
+        s8 ownKart = (net_menu_online_active() && gModeSelection == BATTLE)
+                         ? (s8) net_lockstep_local_slot()
+                         : screenId;
+    if (playerIndex == ownKart) {
         var_f20 = 0.3f;
     } else {
         // wut?
@@ -6103,6 +6113,7 @@ void render_battle_balloon(Player* player, s8 playerIndex, s16 balloonIndex, s8 
         if (var_f20 <= 0.3) {
             var_f20 = 0.3f;
         }
+    }
     }
     sp134[0] = gPlayerBalloonPosX[playerIndex][balloonIndex];
     sp134[1] = gPlayerBalloonPosY[playerIndex][balloonIndex];
@@ -6748,8 +6759,19 @@ void func_8006D474(Player* player, s8 playerId, s8 screenId) {
             }
         }
     }
-    if ((gModeSelection == BATTLE) && (player->unk_002 & (UNK_002_UNKNOWN_0x2 << (screenId * 4)))) {
-        render_remaining_battle_balloons(player, playerId, screenId);
+    {
+        /* Battle balloons are gated by a per-screen frustum-visibility bit
+         * (unk_002, set against camera[screenId]). For online 1P the joiner's
+         * camera[0] is its own chase-cam, so a kart it can plainly see (e.g. the
+         * host it is attacking) can still fail the cull and its balloons never
+         * pop on-screen — the "host didn't lose balloons" report. Skip the cull
+         * for online battle so every kart's remaining balloons always draw
+         * (off-screen ones are clipped anyway). Render-only, determinism-safe. */
+        extern s32 net_menu_online_active(void);
+        s32 vis = net_menu_online_active() || (player->unk_002 & (UNK_002_UNKNOWN_0x2 << (screenId * 4)));
+        if ((gModeSelection == BATTLE) && vis) {
+            render_remaining_battle_balloons(player, playerId, screenId);
+        }
     }
 }
 
