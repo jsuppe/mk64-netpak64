@@ -6,6 +6,20 @@ commit, build flags, and md5. Rollback ROMs live in
 them, named `<version>_<md5>.tape` — a tape verifies ONLY the exact ROM that
 recorded it (sim is ROM-layout-sensitive; see HARNESS_NOTES.md).
 
+## v68 — 2026-07-14 — diag: localize desyncs to the exact kart
+- commit: version-bump cut — after (per-kart-at-desync poke)
+- product ROM: md5 cb4dac42 (`releases/v68_product_cb4dac42.z64`)
+- v67 still hit the cross-machine 2p-battle desync (game KHP4RS, frame 560). The
+  continuous per-kart 0x78 stream couldn't localize it — the uplink throttles it
+  and the two consoles sample different frames (0 overlap). NEW: each console
+  keeps a per-kart ring and, the instant the live detector latches the desync,
+  pokes its OWN per-kart sub-hashes for the split frame once (tag 0x7C,
+  kart<<20|sub). Both consoles do it, so diffing node A vs node B at the split
+  frame names the diverging kart. One-shot at a rare event → survives the uplink.
+- No behavior change — diagnostic only. harness8 8/8 (153f), 2p battle 1206f 0
+  desync. NEXT: the next red square will name the kart; then chase the field.
+- refreshed mk64_netpak_human.z64 -> 68.
+
 ## v67 — 2026-07-14 — battle: fix 8-PLAYER frame-0 desync (spawn from GO-frozen roster)
 - commit: version-bump cut — after 806711240
 - product ROM: md5 5415ee70 (`releases/v67_product_5415ee70.z64`)
