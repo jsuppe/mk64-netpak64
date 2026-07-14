@@ -6,6 +6,23 @@ commit, build flags, and md5. Rollback ROMs live in
 them, named `<version>_<md5>.tape` — a tape verifies ONLY the exact ROM that
 recorded it (sim is ROM-layout-sensitive; see HARNESS_NOTES.md).
 
+## v62 — 2026-07-13 — battle: no CPU fillers (fixes stray karts + balloons)
+- commit: version-bump cut — after 5dd41cdc2 (no CPU fillers)
+- product ROM: md5 8c128832 (`releases/v62_product_8c128832.z64`)
+- FIXES (from v61 console play): the 1P-battle spawn made all 8 karts EXIST, so a
+  2-player battle had 6 broken CPU karts (no path to follow on a battle stage)
+  with ground-level balloons. Now only the room's np players EXIST (like a
+  split-screen 2p battle); the rest are spawned deterministically but don't
+  exist. battleprobe confirms just the 2 players, balloons floating correctly, 0
+  desync. harness8 all-8-identical.
+- STILL OPEN (need console re-test with reduced roster): host reported "can't
+  drive my kart" and joiner "steers in tight circles toward the camera" — a
+  control/camera issue not reproducible via the autodrive probe. Input/puppet
+  paths verified sound (slot 0 never puppeted; karts sim-driven). Also still: HUD
+  shows LAP 1/3 not balloons; other 3 arenas may cluster karts; victory not
+  verified.
+- refreshed mk64_netpak_human.z64 -> 62.
+
 ## v61 — 2026-07-13 — ONLINE BATTLE IS PLAYABLE 🎉
 - commit: version-bump cut — after a42c4e205 (all-arenas + crash-proof spawn)
 - product ROM: md5 9b28a800 (`releases/v61_product_9b28a800.z64`)
