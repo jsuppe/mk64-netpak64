@@ -895,6 +895,13 @@ static bool net_menu_lobby_drain(OnlineMsg* startOut, u8* startSrc) {
 
 void net_menu_reset(void) {
     s32 i;
+    /* Leave any lingering netpak room on a FRESH entry to the online menu. The
+     * battle-end returns to the title WITHOUT leaving the room (leaving mid-
+     * transition black-screened the render), so the old room stays alive; without
+     * this, the next host/join stuck on the stale session. Safe here — menu
+     * context, not mid-render — and a no-op when there is no room. LIST/browse
+     * only needs the relay connection, which session_leave keeps. */
+    netpak_session_leave();
     sSpectator = false;
     sSpecMask = 0;
     sLobbySpecMask = 0;
