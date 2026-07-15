@@ -6,6 +6,24 @@ commit, build flags, and md5. Rollback ROMs live in
 them, named `<version>_<md5>.tape` — a tape verifies ONLY the exact ROM that
 recorded it (sim is ROM-layout-sensitive; see HARNESS_NOTES.md).
 
+## v73 — 2026-07-14 — battle-end: force sim gate open (fix black-screen freeze)
+- commit: version-bump cut — after (net_lockstep_clear_stall)
+- product ROM: md5 3ed25e6c (`releases/v73_product_3ed25e6c.z64`)
+- v72 battle-end zoomed then black-screened stuck on both (v71 had returned to
+  title — FLAKY). Root: after net_menu_online_end() the sim gate is `if
+  (!net_lockstep_stalled())` = bare sLsStall; if left true when the race ended,
+  func_8028FCBC never runs the fade and the transition freezes on the black frame.
+  Fix: net_lockstep_clear_stall() forces the gate open in the battle-end intercept.
+  harness8 8/8. Only fires at battle-end.
+- DESYNC status: v72's hop-RNG seed fix WORKED (v71 seed mask=0 -> v72 kart-1
+  mask=0x02). The remaining desync is a SEPARATE console-vs-emulator divergence in
+  kart 1's physics, Big Donut only (BRIDGE surface; the other 3 arenas are ASPHALT
+  and may be clean). Still hunting; likely another surface-dependent branch or
+  uninitialized battle field.
+- STILL OPEN: the kart-1 desync; joiner camera pan (follow-rate asymmetry);
+  pause-at-battle-end.
+- refreshed mk64_netpak_human.z64 -> 73.
+
 ## v72 — 2026-07-14 — battle: FIX the cross-machine desync (hop-bob RNG) + stuck-host/join
 - commit: version-bump cut — after (hop-RNG seed fix + session-leave-on-reset)
 - product ROM: md5 22f1a903 (`releases/v72_product_22f1a903.z64`)
