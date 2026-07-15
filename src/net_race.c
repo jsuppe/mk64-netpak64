@@ -93,9 +93,17 @@ static void net_race_menu_test(void) {
 #if NET_MENU_TEST
     static u32 tick;
     static s32 downs;
+    static s32 onlineStep; /* NETWORK_VS_MENU sequencer (hoisted from the case so a
+        race can RESET it): zeroed while racing, so a console that returns to the
+        title after a finished game re-runs the whole host/join flow — the
+        second-game e2e (game 2 host black-screen repro). */
     u16 press = 0;
 
-    if (!netpak_present() || gGamestate == RACING) {
+    if (!netpak_present()) {
+        return;
+    }
+    if (gGamestate == RACING) {
+        onlineStep = 0; /* re-arm the online flow for a possible second game */
         return;
     }
     if ((tick++ % 18) != 0) {
@@ -172,8 +180,8 @@ static void net_race_menu_test(void) {
         case NETWORK_VS_MENU: { /* join the preset room, then START. Instances still
                                  * carrying the default identity ("player") first walk
                                  * the NAME editor — exercises rename end-to-end without
-                                 * touching harness/bot instances named via NP64_NAME. */
-            static s32 onlineStep;
+                                 * touching harness/bot instances named via NP64_NAME.
+                                 * onlineStep is function-scope (reset per race). */
             static s32 doRename = -1;
             static s32 isAlice;
             static s32 isCarol;
@@ -203,8 +211,10 @@ static void net_race_menu_test(void) {
                     switch (onlineStep) {
                         case 1: press = A_BUTTON; break; /* HOST -> class pick */
                         case 2: press = A_BUTTON; break; /* 100cc -> visibility */
-                        case 3: press = D_JPAD;   break; /* PRIVATE -> PUBLIC */
-                        case 4: press = A_BUTTON; break; /* create -> OM_HOSTING */
+                        case 4: press = A_BUTTON; break; /* create -> OM_HOSTING.
+                                 (PUBLIC is the visibility default since v57 —
+                                 the old D-press here toggled it to PRIVATE and
+                                 FIND GAME listed nothing.) */
                         default:
                             /* start once a finder has joined (or give up late) */
                             if (onlineStep >= 12 && (onlineStep % 4) == 0) {
