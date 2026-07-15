@@ -6,6 +6,29 @@ commit, build flags, and md5. Rollback ROMs live in
 them, named `<version>_<md5>.tape` — a tape verifies ONLY the exact ROM that
 recorded it (sim is ROM-layout-sensitive; see HARNESS_NOTES.md).
 
+## v72 — 2026-07-14 — battle: FIX the cross-machine desync (hop-bob RNG) + stuck-host/join
+- commit: version-bump cut — after (hop-RNG seed fix + session-leave-on-reset)
+- product ROM: md5 22f1a903 (`releases/v72_product_22f1a903.z64`)
+- THE DESYNC, FOUND AND FIXED. v71's per-kart localizer proved it's the RNG SEED
+  (every kart matched, mask 0x00), not physics. Root: func_80030A34, the cosmetic
+  hop-bob (player_controller.c:3190/3211), draws random_int 0 or 1 times depending
+  on surfaceType AND a float threshold (speed/18*216 >= 8.0). Big Donut is BRIDGE
+  (default case) -> the threshold flips the draw COUNT 0<->1; GP + the other 3
+  arenas are ASPHALT (1 draw either way = invariant), which is why ONLY Big Donut
+  battle desynced. The >=8.0 compare rounds differently N64-vs-emulator at the
+  boundary, so console-vs-emulator the two drew gRandomSeed16 a different number of
+  times -> shared seed diverged. A shell hit sweeps speed through 8.0 = "after
+  items". FIX: save/restore gRandomSeed16 around the hop for online (the bob is
+  cosmetic/unhashed, so it still animates; RNG stream stays identical). Same
+  pattern as the v64 balloon fix. harness8 8/8, 2p 0 desync (loopback can't
+  reproduce the FPU boundary; console test is the proof).
+- Also: stuck host/join after a game FIXED — net_menu_reset now leaves any
+  lingering netpak room on online-menu entry (the v70 battle-end fix left the room
+  alive). And battle-END now returns to title cleanly (v70, user-confirmed).
+- STILL OPEN: joiner camera pan (v70 fix disproved by 0x5A = surfaceDistance fine;
+  real cause looks like follow-rate asymmetry); pause-at-battle-end froze both.
+- refreshed mk64_netpak_human.z64 -> 72.
+
 ## v71 — 2026-07-14 — diag: definitive one-poke desync localization (per-kart in LSHASH)
 - commit: version-bump cut — after (LSHASH per-kart)
 - product ROM: md5 c63b220f (`releases/v71_product_c63b220f.z64`)
