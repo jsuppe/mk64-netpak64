@@ -3181,6 +3181,21 @@ f32 func_80030150(Player* player, s8 playerIndex) {
 void func_80030A34(Player* player) {
     f32 var_f0;
     f32 var_f2;
+    /* This cosmetic hop-bob (unk_07A/unk_108, NOT hashed) draws random_int 0 or
+     * 1 times depending on player->surfaceType AND the float threshold
+     * (speed/18*216 >= 8.0). On a non-ASPHALT surface (Big Donut = BRIDGE) that
+     * threshold flips the DRAW COUNT between 0 (fast) and 1 (slow), and the
+     * comparison rounds differently on the N64 FPU vs an emulator right at 8.0 —
+     * so mid-battle (a shell hit sweeps speed through 8.0) the two consoles drew
+     * gRandomSeed16 a different number of times and the SHARED sim RNG diverged
+     * (karts matched, seed didn't — the localized 0x5B desync). GP raceways and
+     * the other 3 arenas are ASPHALT (1 draw either way = invariant), which is
+     * why only Big Donut battle desynced. Fix: protect the sim seed for online —
+     * the bob still animates, but its draw never advances the shared stream.
+     * Offline keeps vanilla behaviour. */
+    extern u16 gRandomSeed16;
+    extern s32 net_menu_online_active(void);
+    u16 savedSeed = gRandomSeed16;
 
     if (((player->lakituProps & HELD_BY_LAKITU) != HELD_BY_LAKITU) &&
         ((player->lakituProps & LAKITU_SCENE) != LAKITU_SCENE)) {
@@ -3225,6 +3240,9 @@ void func_80030A34(Player* player) {
         if (player->unk_108 <= 0.0f) {
             player->unk_108 = 0.0f;
         }
+    }
+    if (net_menu_online_active()) {
+        gRandomSeed16 = savedSeed; /* keep the shared sim RNG in lockstep */
     }
 }
 
