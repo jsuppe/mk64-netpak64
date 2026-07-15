@@ -3665,34 +3665,33 @@ void net_lockstep_cam_push(void) {
         D_800DC5EC->player = &gPlayers[view];
         return;
     }
-    sCamFollowFrame = sLsFrame;
     if (!spec || gNetSpecView == SPEC_VIEW_CHASE) {
         if (spec && D_80152300[0] == 3) {
             D_80152300[0] = 1; /* leaving cinematic: back to chase */
         }
         {
-            /* Force the chase-cam's yaw-tracking (pan) branch. func_8001E45C /
-             * func_8001EA0C FREEZE the camera yaw (unk_2C stops integrating —
-             * so panning stops while position still follows player->pos) whenever
-             * the followed kart has a spin-out effect OR
-             * collision.surfaceDistance[0]/[1] <= 0. The joiner's local kart reads
-             * non-positive wall distances here, so its camera never panned with
-             * turns — the "speedboat drift" (GP + battle). Feed the follow
-             * positive distances so it always integrates yaw toward the kart
-             * heading, then restore (render-only; the sim recomputes collision
-             * next tick regardless). */
+            /* PAN RATE (the long-reported joiner "camera doesn't keep up with the
+             * kart's turn — I can 360 before it swings behind me"): the HOST's
+             * camera follow runs INSIDE the sim loop, gTickSpeed(=2) times per
+             * render frame; this local follow ran ONCE per render frame. Each
+             * follow call rotates the chase yaw (adjust_angle on unk_2C) by a
+             * fixed per-call rate, so half the calls = half the pan speed — the
+             * kart out-turns the camera and it crawls back after the turn. Run
+             * the follow once per elapsed SIM TICK (sLsFrame advances gTickSpeed
+             * per render frame), clamped, so the joiner integrates yaw at exactly
+             * the host's rate. Stall behavior is unchanged (no ticks -> hold). */
+            u32 steps = sLsFrame - sCamFollowFrame;
             f32 sd0 = gPlayers[view].collision.surfaceDistance[0];
             f32 sd1 = gPlayers[view].collision.surfaceDistance[1];
-            static u32 sCamDbg;
-            if ((sCamDbg++ % 30) == 0) { /* ~1/s: confirm the freeze trigger */
-                u32 e = (u32) gPlayers[view].effects;
-                netpak_debug_poke(0x5A000000u |
-                                  ((sd0 <= 0.0f) ? 0x1u : 0u) | ((sd1 <= 0.0f) ? 0x2u : 0u) |
-                                  ((e & 0x80000u) ? 0x4u : 0u) | ((e & 0x800000u) ? 0x8u : 0u));
+            sCamFollowFrame = sLsFrame;
+            if (steps > 4) {
+                steps = 4; /* long stall/catch-up: don't whip the camera */
             }
             if (sd0 <= 0.0f) { gPlayers[view].collision.surfaceDistance[0] = 100.0f; }
             if (sd1 <= 0.0f) { gPlayers[view].collision.surfaceDistance[1] = 100.0f; }
-            func_8001EE98(&gPlayers[view], camera1, 0);
+            for (; steps != 0; steps--) {
+                func_8001EE98(&gPlayers[view], camera1, 0);
+            }
             gPlayers[view].collision.surfaceDistance[0] = sd0;
             gPlayers[view].collision.surfaceDistance[1] = sd1;
         }
