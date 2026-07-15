@@ -6,6 +6,22 @@ commit, build flags, and md5. Rollback ROMs live in
 them, named `<version>_<md5>.tape` — a tape verifies ONLY the exact ROM that
 recorded it (sim is ROM-layout-sensitive; see HARNESS_NOTES.md).
 
+## v74 — 2026-07-14 — camera: fix joiner pan RATE (integrate at the host's rate)
+- commit: version-bump cut — after (pan-rate fix)
+- product ROM: md5 4913986f (`releases/v74_product_4913986f.z64`)
+- User re-characterized the joiner camera: it PANS, but slower than the kart turns
+  (release the stick -> crawls back; keep turning -> can 360 before it catches
+  up). Root: the host's camera follow runs gTickSpeed(=2)x per render frame inside
+  the sim loop; the joiner's isolated follow ran 1x per render frame. adjust_angle
+  rotates the chase yaw a fixed amount per CALL -> half the calls = half the pan
+  speed. FIX: run the joiner follow once per elapsed sim tick (clamped to 4), so
+  yaw integrates at exactly the host's rate. Stall hold unchanged. Render-only.
+- Verified: harness8 8/8 (153f); 2p battleprobe 1155f 0 desync.
+- Carries v73's battle-end black-screen fix (net_lockstep_clear_stall).
+- STILL OPEN: kart-1 physics desync on Big Donut (try the ASPHALT arenas: Block
+  Fort / Skyscraper / Double Deck — likely desync-free); pause-at-battle-end.
+- refreshed mk64_netpak_human.z64 -> 74.
+
 ## v73 — 2026-07-14 — battle-end: force sim gate open (fix black-screen freeze)
 - commit: version-bump cut — after (net_lockstep_clear_stall)
 - product ROM: md5 3ed25e6c (`releases/v73_product_3ed25e6c.z64`)
