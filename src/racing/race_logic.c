@@ -80,9 +80,11 @@ void func_8028E028(void) {
      * aliveCounter<=1 at the same sim frame from the shared balloon counts. */
     if (net_menu_online_active() && gModeSelection == BATTLE) {
         extern void netpak_debug_poke(u32);
+        extern void net_lockstep_clear_stall(void);
         netpak_debug_poke(0x79000000u | ((u32) gPlayerWinningIndex & 0xFFu)); /* battle-end intercept fired */
-        net_menu_online_end();   /* disengage the in-race lockstep gate */
-        func_8028FBD4();         /* fade out -> START_MENU */
+        net_menu_online_end();     /* disengage the in-race lockstep gate */
+        net_lockstep_clear_stall(); /* force the sim gate open so the fade advances */
+        func_8028FBD4();           /* fade out -> START_MENU */
         /* session_leave DEFERRED: it tore down the netpak session mid-transition,
          * which (a) killed the diag uplink so the post-end path was invisible and
          * (b) is the prime suspect for the black-screen stall — the GP pause-quit

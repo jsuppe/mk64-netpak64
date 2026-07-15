@@ -3322,6 +3322,20 @@ bool net_lockstep_stalled(void) {
 #endif
 }
 
+/* Clean disengage for the battle-end return-to-menu. After net_menu_online_end()
+ * clears sOnlineActive, net_lockstep_stalled() returns bare sLsStall; if that was
+ * left true when the race ended (e.g. a peer stopped sending because it hit the
+ * battle-over too), the 1P sim gate in main.c holds and the D_800DC510 fade never
+ * advances -> the "zoom out then black screen stuck" freeze. Force the gate open
+ * so the fade->START_MENU transition always completes. */
+void net_lockstep_clear_stall(void) {
+#if NET_LOCKSTEP
+    sLsStall = false;
+    sLsStallTicks = 0;
+    sLsEngaged = false;
+#endif
+}
+
 /* Path B Hook B: snapshot the sim's private RNG state after the per-frame sim work
  * and before rendering, so render (which also advances gRandomSeed16) can't drift
  * the sim stream. Paired with the load at the top of net_lockstep_tick. No-op
