@@ -6,6 +6,26 @@ commit, build flags, and md5. Rollback ROMs live in
 them, named `<version>_<md5>.tape` — a tape verifies ONLY the exact ROM that
 recorded it (sim is ROM-layout-sensitive; see HARNESS_NOTES.md).
 
+## v75 — 2026-07-15 — camera pan x2 (the REAL rate fix) + second-game e2e verified
+- commit: version-bump cut — after (pan x2 + autopilot re-arm)
+- product ROM: md5 d3b2389c (`releases/v75_product_d3b2389c.z64`)
+- CAMERA: v74's pan-rate fix was a NO-OP — sLsFrame advances once per render
+  frame (not gTickSpeed times), so "once per elapsed sLsFrame" was the same
+  single call as before. v75 multiplies by gTickSpeed: the joiner's chase yaw now
+  integrates twice per render frame, exactly the host's rate. (Also caught an
+  s16-vs-s32 extern that would have read 0 on MIPS and frozen the camera.)
+- SECOND-GAME: built battleend2.sh (autopilot re-arms after a race; battle force-
+  ended by balloon poke) — game 2 launches and races on BOTH instances at HEAD,
+  in both the join-by-code and the real host-menu flow, multiple cycles. The v74
+  "host black-screens at start-match on game 2" does NOT reproduce at HEAD;
+  retest the exact manual flow on this build. Autopilot FIND-mode fix: since v57
+  PUBLIC is the visibility default, the old D-press made rooms PRIVATE and FIND
+  listed nothing.
+- Verified: harness8 8/8 (152f); battleend2 two-games e2e; carries v73's
+  battle-end gate-clear + v72's desync fixes.
+- STILL OPEN: kart-1 physics desync on Big Donut (console-only); pause-at-end.
+- refreshed mk64_netpak_human.z64 -> 75.
+
 ## v74 — 2026-07-14 — camera: fix joiner pan RATE (integrate at the host's rate)
 - commit: version-bump cut — after (pan-rate fix)
 - product ROM: md5 4913986f (`releases/v74_product_4913986f.z64`)
