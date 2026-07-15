@@ -3673,19 +3673,21 @@ void net_lockstep_cam_push(void) {
             /* PAN RATE (the long-reported joiner "camera doesn't keep up with the
              * kart's turn — I can 360 before it swings behind me"): the HOST's
              * camera follow runs INSIDE the sim loop, gTickSpeed(=2) times per
-             * render frame; this local follow ran ONCE per render frame. Each
-             * follow call rotates the chase yaw (adjust_angle on unk_2C) by a
-             * fixed per-call rate, so half the calls = half the pan speed — the
-             * kart out-turns the camera and it crawls back after the turn. Run
-             * the follow once per elapsed SIM TICK (sLsFrame advances gTickSpeed
-             * per render frame), clamped, so the joiner integrates yaw at exactly
-             * the host's rate. Stall behavior is unchanged (no ticks -> hold). */
-            u32 steps = sLsFrame - sCamFollowFrame;
+             * RENDER frame. sLsFrame (the lockstep frame) advances ONE per render
+             * frame — net_lockstep_tick runs once per frame while the sim loop
+             * runs gTickSpeed iterations — so the v74 "once per elapsed sLsFrame"
+             * was still 1 call/frame: HALF the host's yaw integration (the v74
+             * comment got this wrong, and the console confirmed no change). Run
+             * gTickSpeed follows per elapsed lockstep frame so the joiner
+             * integrates the chase yaw at exactly the host's rate. Stall
+             * behavior unchanged (no ticks -> hold). */
+            extern s32 gTickSpeed;
+            u32 steps = (sLsFrame - sCamFollowFrame) * (u32) gTickSpeed;
             f32 sd0 = gPlayers[view].collision.surfaceDistance[0];
             f32 sd1 = gPlayers[view].collision.surfaceDistance[1];
             sCamFollowFrame = sLsFrame;
-            if (steps > 4) {
-                steps = 4; /* long stall/catch-up: don't whip the camera */
+            if (steps > 6) {
+                steps = 6; /* long stall/catch-up: don't whip the camera */
             }
             if (sd0 <= 0.0f) { gPlayers[view].collision.surfaceDistance[0] = 100.0f; }
             if (sd1 <= 0.0f) { gPlayers[view].collision.surfaceDistance[1] = 100.0f; }
