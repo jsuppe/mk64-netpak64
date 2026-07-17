@@ -50,6 +50,22 @@ cause). Last updated: 2026-07-16 (v75 current).
    `/mnt/micron/jsuppe/netpak/PERF_BASELINE.md`. `NP_PERF_PTCL=1` for fine
    particle profiling (costs 0.7ms).
 
+## Rotating-host battle battery (2026-07-16/17)
+- `battle4g.sh` (netpak dir): 4 instances, 4 Big Donut battles, host rotating
+  alice→bob→carol→dave through the REAL host-menu/FIND flow — **4/4 green, 0
+  desyncs**, relay-confirmed room creators. Fresh quartet per game;
+  `gNetTestHostSeat` poked at boot (commit ed62e98a0; addresses in the script
+  header are layout-sensitive per test-ROM build).
+- `battle4x4.sh` = the same-session variant (autopilot re-arm between games);
+  blocked by an open finding: **after a joiner has raced once, external GDB RAM
+  pokes to it silently stop taking effect** (host memory stays pokeable) —
+  same-session rotation needs a ROM-side mechanism (e.g. lockstep-synced game
+  counter). Second finding: a multi-second emulator freeze at the battle-over
+  moment can wedge that console (same family as the open pause-at-end bug).
+- np_cmd() now paces its CMD_STATUS poll (~170us) — stalled commands used to
+  burn the 4M-line io-trace budget in seconds. NOTE: rides into the next
+  product cut.
+
 ## Desync-hunt playbook
 - **0x5B poke** = one-poke desync localizer: returns a kart bitmask naming
   which kart's per-kart hash (inside the LSHASH, v71) diverged; mask=0 means
