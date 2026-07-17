@@ -27,6 +27,12 @@ cause). Last updated: 2026-07-16 (v75 current).
    (b) extend the 0x5B localizer per-FIELD (position vs motion) to pin what in
    kart 1 diverges.
 2. **Pause at battle-end freezes both instances** (user-reported, v72 era).
+   NEW datapoint (2026-07-17, console v75): SOLO online battle → instant end →
+   zoom-out → black-screen wedge. Diag beacon: frozen in gamestate 4, gates
+   3→1, df stuck, **stall_ticks=0** — so it is NOT the sLsStall gate v73
+   clears; a second gate (blank-frame/GO family) stays shut on this path.
+   Repro: console, host battle, START with no joiners. Room SXLQ6K diag
+   20260717 has the full trace.
 3. **Spectator freezes when ANY racer leaves** (open since v57, all timings).
    Racer↔racer drop recovery works; spectators never apply the LSDROP. Look at
    the spectator LSDROP ingest + `sLsLocalSpec` guards in `net_race.c`.
