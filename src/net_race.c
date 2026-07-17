@@ -206,8 +206,35 @@ static void net_race_menu_test(void) {
                 /* FIND GAME e2e mode (v47, no NP64_ROOM): carol HOSTs a PUBLIC
                  * game through the class + visibility screens; everyone else
                  * browses FIND GAME and joins the first listing. Dwell on the
-                 * browser so harness screenshots can catch it rendered. */
-                if (isCarol) {
+                 * browser so harness screenshots can catch it rendered.
+                 * gNetTestHostSeat moves the host role per game (battle4x4). */
+                extern u32 gNetTestHostSeat;
+                static u32 seatLatch;
+                static s32 hostMe;
+                static s32 minPlayers;
+                if (onlineStep == 0) {
+                    /* LATCH the seat once per flow entry: a poke landing
+                     * mid-flow must not flip host<->joiner mid-sequence (the
+                     * flipped instance walks BOTH step tables — creates a room
+                     * then FIND-joins its own, or rogue-STARTs from a joined
+                     * seat; battle4x4 game-3 chaos, 2026-07-16). 0xF1 tracer =
+                     * the value this flow decided with. */
+                    seatLatch = gNetTestHostSeat;
+                    hostMe = isCarol;
+                    minPlayers = 2;
+                    if (seatLatch != 0) {
+                        char hn[16];
+                        netpak_get_name(hn);
+                        hostMe = (hn[0] == (char)(seatLatch & 0xFF));
+                        minPlayers = (s32)((seatLatch >> 8) & 0xFF);
+                        if (minPlayers < 2) {
+                            minPlayers = 2;
+                        }
+                    }
+                    netpak_debug_poke(0xF1000000u | (seatLatch & 0xFFFFu) |
+                                      (hostMe ? 0x00800000u : 0u));
+                }
+                if (hostMe) {
                     switch (onlineStep) {
                         case 1: press = A_BUTTON; break; /* HOST -> class pick */
                         case 2: press = A_BUTTON; break; /* 100cc -> visibility */
@@ -218,7 +245,7 @@ static void net_race_menu_test(void) {
                         default:
                             /* start once a finder has joined (or give up late) */
                             if (onlineStep >= 12 && (onlineStep % 4) == 0) {
-                                if (net_menu_player_count() >= 2 || onlineStep >= 150) {
+                                if (net_menu_player_count() >= minPlayers || onlineStep >= 150) {
                                     press = START_BUTTON;
                                 }
                             }
@@ -1398,6 +1425,11 @@ static u32  sLsSpecMask;           /* latched at reset: spectator slot bits */
 static u32     sLsFrame;
 u32 gNetTestCourse;   /* dismat course override: force this course id (0=off) */
 u32 gNetTestBattle;   /* probe: force online BATTLE on Big Donut (0=off) */
+/* gNetTestHostSeat (battle4x4 host rotation) is DEFINED in netpak_mk64.c:
+ * defined here it landed early in net_race.o's .bss, inside a range a race
+ * transition zeroes — every cross-game GDB pin was silently wiped before the
+ * autopilot's flow-entry latch read it (2026-07-16 run 8: game-3 latches all
+ * 0x000000). Driver .bss survives race transitions. */
 u32 gNetTestForceQuit; /* test: force the pause-overlay QUIT (autodrive holds A,
                         * so the A-confirm edge never fires in the harness) */
 u32 gNetTestPauseAt;  /* dismat pause injector: sim frame to pause at (0=off) */

@@ -144,6 +144,11 @@ static volatile u32 np_ring_head, np_ring_tail; /* tail-head = fill */
 static volatile u32 np_rx_dropped;
 static bool np_irq_mode;
 static bool np_present; /* cached: device detected + initialized */
+u32 gNetTestHostSeat;   /* battle4x4 host rotation knob (read by the net_race
+                         * menu autopilot; latched at flow entry). Lives in
+                         * DRIVER .bss on purpose: defined in net_race.c it sat
+                         * in a range wiped at race transitions, erasing every
+                         * cross-game GDB pin (2026-07-16). */
 
 /* 16-byte-aligned bounce buffers. DMA needs 8-byte RDRAM alignment / even
  * lengths, but osInvalDCache/osWritebackDCache operate at 16-byte cache-line
@@ -697,6 +702,14 @@ static s32 np_cmd(u8 opcode) {
         }
         if (np_ticks_us() > deadline) {
             return -6; /* TIMEOUT */
+        }
+        {
+            /* Pace the poll (~170us): a tight spin hammers the cart bus and,
+             * under NP64_TRACE_IO, logs one line per read — a stalled command
+             * burned the whole 4M-line trace budget in seconds and blinded
+             * every later harness marker (2026-07-16). Menu-only latency. */
+            volatile s32 spin;
+            for (spin = 0; spin < 4000; spin++) {}
         }
     }
 }
