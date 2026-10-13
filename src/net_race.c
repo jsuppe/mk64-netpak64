@@ -52,6 +52,7 @@ extern u8 cpu_ItemStrategy[];
 extern Player gPlayers[];
 extern struct Controller gControllers[];
 extern s32 gGamestate;
+extern s32 gModeSelection;
 extern s32 gGlobalTimer;
 extern s32 gMenuSelection;
 extern s8  gMainMenuSelection;
@@ -337,6 +338,23 @@ static void net_race_menu_test(void) {
  * Diagnosed by poking gPlayers[0].type (0xE200) to a device register visible
  * in NP64_TRACE_IO. Fix = drive the intro state machine properly (see task). */
 #define NET_DEMO_AUTODRIVE 0
+
+/* Race bots use MK64's native CPU driver instead of synthesizing steering.
+ * A bot advertises that choice in its normal lockstep input lane with a value
+ * no physical N64 controller can produce. Because the marker is applied from
+ * the delayed ring, every console changes that kart's type on the same logical
+ * frame, and input tapes preserve the mode without a protocol-size change.
+ *
+ * Battle mode deliberately ignores the marker: vanilla MK64 has no battle CPU
+ * navigation, so the existing waypoint fallback remains active there. */
+#define NET_AI_INPUT_BUTTON 0xA55Au
+#define NET_AI_INPUT_STICK_X ((s8) 0x7F)
+#define NET_AI_INPUT_STICK_Y ((s8) 0x80)
+
+static bool net_is_ai_input(u16 button, s8 stickX, s8 stickY) {
+    return button == NET_AI_INPUT_BUTTON && stickX == NET_AI_INPUT_STICK_X &&
+           stickY == NET_AI_INPUT_STICK_Y;
+}
 #define NET_AUTODRIVE_AFTER_FRAMES 45 /* just after start_race() forces GO */
 
 /* Input overlay (test builds): last inputs the autodrive injected for the LOCAL
@@ -794,6 +812,22 @@ void net_race_autodrive(void) {
     if (!drive) {
         return;
     }
+
+    /* Race courses already have a mature driver: the game's CPU AI follows
+     * course-specific racing lines, brakes for classified curves, recovers
+     * off-track, handles traffic and uses items. Send a lockstep marker so
+     * every peer delegates this participant on the same simulation frame. */
+    if (gModeSelection != BATTLE) {
+        gControllers[0].button = NET_AI_INPUT_BUTTON;
+        gControllers[0].buttonPressed = 0;
+        gControllers[0].buttonDepressed = 0;
+        gControllers[0].rawStickX = NET_AI_INPUT_STICK_X;
+        gControllers[0].rawStickY = NET_AI_INPUT_STICK_Y;
+        sAdOverlayStick = 0;
+        sAdOverlayBtn = A_BUTTON;
+        return;
+    }
+
     /* Waypoint autodrive v5. v4's eager reverse-arc recovery physically
      * clipped karts THROUGH wall corners (position logs showed a bot exiting
      * the course and driving kilometers off-map in a straight line). v5 is
@@ -2995,26 +3029,40 @@ void net_lockstep_tick(void) {
                 static const LsInput kNeutral = { 0, 0, 0, false, 0 };
                 const LsInput* s = &sLsInput[i][df % LS_RING];
                 u16 cur;
+                bool nativeAi;
                 u16 prev = sLsPrevBtn[i];
                 if (sLsDropped[i] && (sLsDropNever[i] || df > sLsDropLast[i])) {
                     s = &kNeutral; /* dropped: neutral input (kart is CPU anyway) — the
                                     * ring slot holds stale per-console data */
                 }
-                cur = s->button;
+                nativeAi = gModeSelection != BATTLE &&
+                           net_is_ai_input(s->button, s->stickX, s->stickY);
+                if (nativeAi) {
+                    /* Type is simulation state, so switch from shared input,
+                     * never from a console-local bot flag. The CPU driver acts
+                     * directly on the kart; keep its controller lane neutral. */
+                    gPlayers[i].type = (gPlayers[i].type & ~(u32) PLAYER_HUMAN) | PLAYER_CPU;
+                    cur = 0;
+                    gControllers[i].rawStickX = 0;
+                    gControllers[i].rawStickY = 0;
+                } else {
+                    cur = s->button;
+                    gControllers[i].rawStickX = s->stickX;
+                    gControllers[i].rawStickY = s->stickY;
+                }
                 gControllers[i].button = cur;
                 gControllers[i].buttonPressed = (u16) (cur & ~prev);
                 gControllers[i].buttonDepressed = (u16) (~cur & prev);
-                gControllers[i].rawStickX = s->stickX;
-                gControllers[i].rawStickY = s->stickY;
                 sLsPrevBtn[i] = cur;
 #if NET_DIAG
-                /* input tape: record the APPLIED input (post drop-neutral).
-                 * Never while replaying — that would overwrite the tape being
-                 * read (and it already holds exactly these values). */
+                /* Input tape: record the shared-ring value (post drop-neutral).
+                 * Preserve the AI marker even though its runtime pad is neutral,
+                 * otherwise replay would turn the bot human. Never record while
+                 * replaying — that would overwrite the tape being read. */
                 if (!sReplayActive && df < NET_TAPE_MAX_FRAMES) {
                     u8* t = NET_TAPE_DATA + ((u32) df * 8u + (u32) i) * 4u;
-                    t[0] = (u8) (cur >> 8);
-                    t[1] = (u8) cur;
+                    t[0] = (u8) (s->button >> 8);
+                    t[1] = (u8) s->button;
                     t[2] = (u8) s->stickX;
                     t[3] = (u8) s->stickY;
                     if ((u32) df + 1u > NET_TAPE_HDR->frames) {

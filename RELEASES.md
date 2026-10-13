@@ -6,6 +6,20 @@ commit, build flags, and md5. Rollback ROMs live in
 them, named `<version>_<md5>.tape` — a tape verifies ONLY the exact ROM that
 recorded it (sim is ROM-layout-sensitive; see HARNESS_NOTES.md).
 
+## v76 — 2026-10-13 — native race AI for automated participants
+- commit: version-bump cut — after native-AI lockstep marker
+- product ROM: md5 c63a942b (`releases/v76_product_c63a942b.z64`)
+- test ROM: md5 47b2b6b5 (`mk64_test.z64`)
+- Automated race clients now delegate driving to Mario Kart 64's native CPU
+  AI instead of the custom centerline follower that understeered into walls.
+- Bot control is carried as a reserved lockstep input marker, so every peer and
+  deterministic replay switches the same kart on the same logical frame.
+- Human racers remain controller-driven. Battle mode retains the existing
+  waypoint fallback pending a separate arena-navigation implementation.
+- validation: 4 ares instances on Mario Raceway compared 3,732 shared frames
+  (0..3731) with no divergence; recorded demo:
+  `np64out/v76-clean-driving-4up.mp4`.
+
 ## v75 — 2026-07-15 — camera pan x2 (the REAL rate fix) + second-game e2e verified
 - commit: version-bump cut — after (pan x2 + autopilot re-arm)
 - product ROM: md5 d3b2389c (`releases/v75_product_d3b2389c.z64`)

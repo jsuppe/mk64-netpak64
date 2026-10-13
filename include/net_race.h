@@ -20,9 +20,11 @@
 /** Reset all replication state (call on race entry / epoch change). */
 void net_race_reset(void);
 
-/** Demo aid: force the local kart to auto-drive during a networked race so the
- *  paired instance can see it move (no-op unless built with NET_DEMO_AUTODRIVE).
- *  Call from the game loop AFTER read_controllers(). */
+/** Demo aid: request deterministic native CPU control for the local kart on
+ *  race courses; Battle mode retains the waypoint fallback. The request is
+ *  transported through lockstep so every peer changes the kart on the same
+ *  logical frame. No-op unless built with NET_DEMO_AUTODRIVE. Call from the
+ *  game loop AFTER read_controllers(). */
 void net_race_autodrive(void);
 
 /** Test-build overlay: draw the autodrive's injected inputs (stick bar + A/B
