@@ -338,6 +338,7 @@ static void net_race_menu_test(void) {
  * Diagnosed by poking gPlayers[0].type (0xE200) to a device register visible
  * in NP64_TRACE_IO. Fix = drive the intro state machine properly (see task). */
 #define NET_DEMO_AUTODRIVE 0
+#define NET_DEMO_INPUT_OVERLAY 0 /* opt-in controller diagnostics, not gameplay footage */
 
 /* Race bots use MK64's native CPU driver instead of synthesizing steering.
  * A bot advertises that choice in its normal lockstep input lane with a value
@@ -1323,6 +1324,28 @@ static u32 sLsDelay; /* ZERO-INIT ON PURPOSE: an initialized static would be
     net_race.o's only .data symbol — the linker routes this object's .bss to
     netbss but has no home for .data, and the stray section re-triggers the
     v13 boot landmine (driver init wedges). Defaulted in net_lockstep_reset. */
+static u32 sLsAutomatedMask; /* shared-input ownership, not a console-local bot flag */
+
+bool net_race_is_automated_player(s32 playerId) {
+    return playerId >= 0 && playerId < NET_MAX_SLOTS && net_menu_online_active() &&
+           (sLsAutomatedMask & (1u << playerId)) != 0;
+}
+
+bool net_race_automated_finish_pending(void) {
+    s32 i;
+    if (!sLsAutomatedMask || !net_menu_online_active()) {
+        return false; /* ordinary human-only races keep their existing lifecycle */
+    }
+    for (i = 0; i < net_menu_player_count(); i++) {
+        /* Both terms are shared simulation state. A dropped slot loses its
+         * AI marker/human type at the applied DROP boundary, not local time. */
+        if (((sLsAutomatedMask & (1u << i)) || (gPlayers[i].type & PLAYER_HUMAN)) &&
+            !(gPlayers[i].type & PLAYER_CINEMATIC_MODE)) {
+            return true;
+        }
+    }
+    return false;
+}
 
 void net_lockstep_set_delay(s32 d) {
     if (d < LS_DELAY_MIN) {
@@ -1804,6 +1827,7 @@ static void net_lockstep_reset(void) {
     sLsStallTicks = 0;
     sLsStallFrame = 0;
     sLsFrame = 0;
+    sLsAutomatedMask = 0;
     sLsMyPlayer = net_menu_node_id();
     sLsSimSeed = 0x1234; /* shared, identical on every console -> synced sim RNG */
 
@@ -1980,6 +2004,17 @@ static void net_lockstep_apply_drop(const LsDropMsg* dm) {
     netpak_debug_poke(0x58000000u | ((u32) pl << 16) | ((u32) dm->lastFrame & 0xFFFFu));
 }
 #endif /* NET_LOCKSTEP (module) — net_lockstep_tick below is always defined */
+
+#if !NET_LOCKSTEP
+bool net_race_is_automated_player(s32 playerId) {
+    (void) playerId;
+    return false;
+}
+
+bool net_race_automated_finish_pending(void) {
+    return false;
+}
+#endif
 
 /* Full per-frame lockstep step — call AFTER read_controllers during an online
  * race. Converts the extra player slots (1..np-1) to human so they read a
@@ -3038,6 +3073,11 @@ void net_lockstep_tick(void) {
                 nativeAi = gModeSelection != BATTLE &&
                            net_is_ai_input(s->button, s->stickX, s->stickY);
                 if (nativeAi) {
+                    sLsAutomatedMask |= 1u << i;
+                } else {
+                    sLsAutomatedMask &= ~(1u << i);
+                }
+                if (nativeAi) {
                     /* Type is simulation state, so switch from shared input,
                      * never from a console-local bot flag. The CPU driver acts
                      * directly on the kart; keep its controller lane neutral. */
@@ -3870,6 +3910,25 @@ void net_lockstep_cam_pop(void) {
         sDiagCamMode = (u8) D_80152300[0];
         sDiagCamPid = (u8) (camera1->playerId & 0xF);
         sDiagCamDist = (u16) (dd > 0xFFF ? 0xFFF : dd);
+        { static u32 lastDriveSample;
+        if (net_race_is_automated_player(dls) && sLsFrame - lastDriveSample >= 60u) {
+            s16 yawError = (s16) (camera1->unk_2C - gPlayers[dls].rotation[1]);
+            lastDriveSample = sLsFrame;
+            /* osSyncPrintf is a no-op in the non-DEBUG libultra build. Use
+             * the existing device trace/uplink instead; B1..B7 form one
+             * ordered sample and add no state to the shared simulation. */
+            netpak_debug_poke(0xB1000000u | (sLsFrame & 0xFFFFFFu));
+            netpak_debug_poke(0xB2000000u | ((u32) dls << 20) |
+                             (((u32) gPlayers[dls].lapCount & 0xFu) << 16) | gPlayers[dls].type);
+            netpak_debug_poke(0xB3000000u | ((u32) D_80152300[0] << 16) |
+                             (u16) gNearestPathPointByPlayerId[dls]);
+            netpak_debug_poke(0xB4000000u | ((u32) (u16) yawError << 8) |
+                             ((u32) (gPlayers[dls].speed * 10.0f) & 0xFFu));
+            netpak_debug_poke(0xB5000000u | ((u32) (s32) (gPlayers[dls].pos[0] * 10.0f) & 0xFFFFFFu));
+            netpak_debug_poke(0xB6000000u | ((u32) (s32) (gPlayers[dls].pos[2] * 10.0f) & 0xFFFFFFu));
+            netpak_debug_poke(0xB7000000u | (gPlayers[dls].effects & 0xFFFFFFu));
+        }
+        }
     }
 #endif
 
@@ -3923,11 +3982,10 @@ void net_lockstep_cam_pop(void) {
 }
 
 s16 gNetCullSection; /* written by render_courses.c: last course chunk drawn */
-#if NET_MENU_TEST && NET_DEMO_AUTODRIVE
-const s32 gNetRaceLaps = 1; /* test: bots finish quickly -> post-race flow reachable */
-#else
-const s32 gNetRaceLaps = 3; /* product: vanilla */
-#endif
+/* Demo qualification must use the product's full race. The old one-lap test
+ * shortcut put CPUs into finish/cinematic mode while the HUD still showed
+ * later laps, so captures looked like orbiting cameras and bad live driving. */
+const s32 gNetRaceLaps = 3;
 u16 gNetColCnt[8];   /* written by collision.c: surface-collision tests per kart */
 
 /* TEMP #31 render diag: which course chunk the renderer chose vs the section
@@ -4032,7 +4090,7 @@ void net_lockstep_desync_indicator(void) {
  * right after cam_pop, while the master display list is still open. No-op in
  * human/product builds (NET_DEMO_AUTODRIVE off) and outside online races. */
 void net_autodrive_overlay(void) {
-#if NET_DEMO_AUTODRIVE
+#if NET_DEMO_AUTODRIVE && NET_DEMO_INPUT_OVERLAY
     extern Gfx* gDisplayListHead;
     s32 cx;
     if (!netpak_present() || !net_menu_online_active() || gGamestate != RACING) {

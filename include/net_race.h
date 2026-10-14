@@ -27,9 +27,19 @@ void net_race_reset(void);
  *  game loop AFTER read_controllers(). */
 void net_race_autodrive(void);
 
+/** True for an online participant delegated to native AI by the currently
+ *  applied shared input. Used for participant finish/results semantics only;
+ *  ordinary background CPUs and dropped slots remain non-participants. */
+bool net_race_is_automated_player(s32 playerId);
+
+/** In a session containing automated participants, hold results until all
+ *  still-participating shared slots finish. No-op in ordinary human sessions. */
+bool net_race_automated_finish_pending(void);
+
 /** Test-build overlay: draw the autodrive's injected inputs (stick bar + A/B
  *  lights) over the race view. Call right after net_lockstep_cam_pop() while
- *  the master display list is open. No-op unless NET_DEMO_AUTODRIVE. */
+ *  the master display list is open. Opt-in via NET_DEMO_INPUT_OVERLAY; disabled
+ *  for normal demo captures because native AI has no real controller lane. */
 void net_autodrive_overlay(void);
 
 /** Spectator status line ("SPECTATING <name> <view>") during a replay. Call

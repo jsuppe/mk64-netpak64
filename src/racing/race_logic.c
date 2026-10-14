@@ -20,6 +20,7 @@
 #include "race_logic.h"
 #include "skybox_and_splitscreen.h"
 #include "net_menu.h"
+#include "net_race.h"
 #include "math_util_2.h"
 #include "effects.h"
 #include "math.h"
@@ -582,8 +583,8 @@ void func_8028EF28(void) {
         } else if (gLapCountByPlayerId[i] > gPlayers[i].lapCount) {
             gPlayers[i].lapCount++;
 
-            if ((gPlayers[i].type & PLAYER_HUMAN) != 0) {
-                extern const s32 gNetRaceLaps; /* 3 in product; 1 in bot test builds */
+            if ((gPlayers[i].type & PLAYER_HUMAN) != 0 || net_race_is_automated_player(i)) {
+                extern const s32 gNetRaceLaps; /* full product-length race, including demos */
                 if (gPlayers[i].lapCount == gNetRaceLaps) {
                     func_8028EEF0(i);
 
@@ -602,7 +603,8 @@ void func_8028EF28(void) {
                     if (gModeSelection == GRAND_PRIX && gPlayerCountSelection1 == 2 && D_802BA048 == 0) {
                         D_802BA048 = 1;
                     }
-                    if ((gPlayers[i].type & PLAYER_INVISIBLE_OR_BOMB) == 0) {
+                    if ((gPlayers[i].type & PLAYER_INVISIBLE_OR_BOMB) == 0 &&
+                        !net_race_automated_finish_pending()) {
                         D_800DC510 = 4;
                     }
                     if (gModeSelection == TIME_TRIALS) {

@@ -6,6 +6,27 @@ commit, build flags, and md5. Rollback ROMs live in
 them, named `<version>_<md5>.tape` — a tape verifies ONLY the exact ROM that
 recorded it (sim is ROM-layout-sensitive; see HARNESS_NOTES.md).
 
+## v77 — 2026-10-13 — full-length automated races and participant finish flow
+
+- product ROM: md5 `ce94c976521b215d7b4dee0b7151beeb`
+- test ROM: md5 `180f31ee075cfd186973a4f779b2b50f`
+- Automated tests now use three laps. The former one-lap shortcut set cinematic
+  finish mode while recordings continued under a three-lap HUD.
+- Shared-input AI ownership is distinct from background CPU status. Automated
+  online participants use participant finish/results semantics; results wait
+  for all still-participating slots in a session containing automation.
+- Human-only finish behavior is unchanged. Battle navigation is not addressed.
+- The controller-input overlay is now explicitly opt-in, not drawn in demo footage.
+- Added device-trace driver telemetry and `tools/netpak_analyze_drive.py`;
+  non-DEBUG `osSyncPrintf` cannot supply the needed telemetry in this build.
+- Three four-instance Mario Raceway runs: 9,241 / 7,664 / 8,040 shared frames,
+  zero divergence in each; all 12 participant completions reached lap 3.
+  No premature finish flags or non-chase active-race camera samples.
+- New 30-fps host-view and 15-fps four-peer footage, with uncut captures:
+  <https://github.com/jsuppe/netpak64/releases/tag/showcase-v77>.
+- Scope and measurement caveats: [qualification report](docs/NETPAK_DEMO_V77.md).
+  Other courses, mixed human sessions, Battle, and console parity remain open.
+
 ## v76 — 2026-10-13 — native race AI for automated participants
 - commit: version-bump cut — after native-AI lockstep marker
 - product ROM: md5 c63a942b (`releases/v76_product_c63a942b.z64`)
